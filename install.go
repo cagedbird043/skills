@@ -18,22 +18,32 @@ const githubAPI = "https://api.github.com"
 
 // ── GitHub client ────────────────────────────────────────────────────
 
-var httpClient = &http.Client{}
+var (
+	httpClient = &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	cachedToken     string
+	cachedTokenOnce sync.Once
+)
 
 func githubToken() string {
-	if t := os.Getenv("GITHUB_TOKEN"); t != "" {
-		return t
-	}
-	// Try gh CLI — search common locations
-	ghPaths := []string{"gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/home/linuxbrew/.linuxbrew/bin/gh"}
-	for _, p := range ghPaths {
-		cmd := exec.Command(p, "auth", "token")
-		out, err := cmd.Output()
-		if err == nil {
-			return strings.TrimSpace(string(out))
+	cachedTokenOnce.Do(func() {
+		if t := os.Getenv("GITHUB_TOKEN"); t != "" {
+			cachedToken = t
+			return
 		}
-	}
-	return ""
+		// Try gh CLI — search common locations
+		ghPaths := []string{"gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/home/linuxbrew/.linuxbrew/bin/gh"}
+		for _, p := range ghPaths {
+			cmd := exec.Command(p, "auth", "token")
+			out, err := cmd.Output()
+			if err == nil {
+				cachedToken = strings.TrimSpace(string(out))
+				return
+			}
+		}
+	})
+	return cachedToken
 }
 
 func githubGET(url string) (*http.Response, error) {
@@ -224,6 +234,13 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 		}
 
 		localPath := filepath.Join(tmpDir, relPath)
+		// Prevent path traversal: verify resolved path stays inside tmpDir
+		cleanLocal := filepath.Clean(localPath)
+		cleanTmp := filepath.Clean(tmpDir) + string(os.PathSeparator)
+		if !strings.HasPrefix(cleanLocal, cleanTmp) {
+			failed++
+			continue
+		}
 		if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
 			failed++
 			continue
@@ -310,13 +327,12 @@ func installOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (Install
 	// Locked and on disk → skip
 	if hasLock {
 		if ls.Commit == "" {
-			// Lock exists but commit is empty — stale lock from older version.
-			// Fetch commit to fill it, but only if SKILL.md is on disk.
+			// Stale lock from older version without a commit SHA.
+			// Don't fill with latest commit — that would make update() think
+			// the skill is up to date when it might not be.
+			// Leave commit empty; update() will detect the mismatch and re-download.
 			if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil {
-				if commit, err := fetchLatestCommit(skill.Source.Repo, skill.Source.Ref); err == nil {
-					return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"},
-						&LockSkill{Commit: commit, Path: skill.Source.Path}
-				}
+				return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
 			}
 		} else if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil {
 			return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
