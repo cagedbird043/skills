@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 var (
 	quiet bool // -q flag
@@ -302,7 +302,7 @@ func printSummary(results []InstallResult) {
 			} else {
 				updated++
 			}
-			ok(r.Name)
+			ok("%s", r.Name)
 		case "updated":
 			updated++
 			ok("%s (updated)", r.Name)
@@ -417,7 +417,7 @@ func cmdVerify(m *Manifest) {
 		skillDir := filepath.Join(expandPath(targetPath), s.Name)
 		sm := filepath.Join(skillDir, "SKILL.md")
 		if _, err := os.Stat(sm); err == nil {
-			ok(s.Name)
+			ok("%s", s.Name)
 		} else {
 			fail("%s: not found at %s", s.Name, sm)
 			bad++

@@ -126,11 +126,21 @@ func downloadFile(repo, ref, filePath string) ([]byte, error) {
 
 	// Handle symlinks — use download_url directly
 	if content.Type == "symlink" && content.DownloadURL != "" {
-		dresp, err := http.Get(content.DownloadURL)
+		req, err := http.NewRequest("GET", content.DownloadURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("symlink request %s: %w", filePath, err)
+		}
+		if token := githubToken(); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		dresp, err := httpClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("download symlink %s: %w", filePath, err)
 		}
 		defer dresp.Body.Close()
+		if dresp.StatusCode != 200 {
+			return nil, fmt.Errorf("download symlink %s: HTTP %d", filePath, dresp.StatusCode)
+		}
 		return io.ReadAll(dresp.Body)
 	}
 
@@ -150,20 +160,16 @@ type InstallResult struct {
 	Error  string
 }
 
-func InstallSkill(skill SkillEntry, destDir string, currentCommit string) InstallResult {
+func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallResult {
 	r := InstallResult{Name: skill.Name}
-
-	// Ensure destination exists
-	if err := os.MkdirAll(destDir, 0755); err != nil {
-		r.Action = "failed"
-		r.Error = fmt.Sprintf("mkdir: %v", err)
-		return r
-	}
 
 	repo := skill.Source.Repo
 	ref := skill.Source.Ref
 	if ref == "" {
 		ref = "main"
+	}
+	if refOverride != "" {
+		ref = refOverride
 	}
 	prefix := skill.Source.Path
 
@@ -173,6 +179,15 @@ func InstallSkill(skill SkillEntry, destDir string, currentCommit string) Instal
 		r.Error = fmt.Sprintf("tree: %v", err)
 		return r
 	}
+
+	// Download to temp directory for atomic install
+	tmpDir, err := os.MkdirTemp("", "skills-"+skill.Name)
+	if err != nil {
+		r.Action = "failed"
+		r.Error = fmt.Sprintf("temp dir: %v", err)
+		return r
+	}
+	defer os.RemoveAll(tmpDir)
 
 	// Filter entries under the prefix
 	prefixSlash := prefix + "/"
@@ -187,7 +202,6 @@ func InstallSkill(skill SkillEntry, destDir string, currentCommit string) Instal
 			continue
 		}
 		if entry.Path == prefix {
-			// skip the directory entry itself if it's listed as a blob
 			continue
 		}
 
@@ -196,7 +210,7 @@ func InstallSkill(skill SkillEntry, destDir string, currentCommit string) Instal
 			continue
 		}
 
-		localPath := filepath.Join(destDir, relPath)
+		localPath := filepath.Join(tmpDir, relPath)
 		if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
 			failed++
 			continue
@@ -211,7 +225,6 @@ func InstallSkill(skill SkillEntry, destDir string, currentCommit string) Instal
 			failed++
 			continue
 		}
-		// Set executable bit if mode is 100755
 		if entry.Mode == "100755" {
 			os.Chmod(localPath, 0755)
 		}
@@ -223,6 +236,22 @@ func InstallSkill(skill SkillEntry, destDir string, currentCommit string) Instal
 		r.Error = "already installed"
 		return r
 	}
+
+	// Verify SKILL.md exists before committing
+	if _, err := os.Stat(filepath.Join(tmpDir, "SKILL.md")); err != nil {
+		r.Action = "failed"
+		r.Error = fmt.Sprintf("SKILL.md missing after download (%d files ok, %d failed)", files, failed)
+		return r
+	}
+
+	// Atomic replace — remove old, move new
+	os.RemoveAll(destDir)
+	if err := os.Rename(tmpDir, destDir); err != nil {
+		r.Action = "failed"
+		r.Error = fmt.Sprintf("rename to %s: %v", destDir, err)
+		return r
+	}
+	tmpDir = "" // prevent defer RemoveAll
 
 	if failed > 0 {
 		r.Action = "failed"
@@ -237,7 +266,7 @@ func InstallSkill(skill SkillEntry, destDir string, currentCommit string) Instal
 // installOneSkill installs a skill trusting the lock file (no remote commit check).
 // If locked and SKILL.md exists → skip (0 API calls).
 // If locked but SKILL.md missing → re-download (1 tree API call).
-// If not locked → download latest (1 tree API call), record tree SHA.
+// If not locked → download latest + fetch commit (2 API calls), record real commit.
 func installOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (InstallResult, *LockSkill) {
 	targetPath := resolveTargetPath(skill.Target, dirs)
 	if targetPath == "" {
@@ -249,19 +278,31 @@ func installOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (Install
 
 	// Locked and on disk → skip
 	if hasLock {
-		if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil {
+		if ls.Commit == "" {
+			// Lock exists but commit is empty — stale lock from older version
+			// Fetch commit to fill it
+			if commit, err := fetchLatestCommit(skill.Source.Repo, skill.Source.Ref); err == nil {
+				return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"},
+					&LockSkill{Commit: commit, Path: skill.Source.Path}
+			}
+		} else if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil {
 			return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
 		}
 	}
 
-	// Need to download (1 tree API call)
-	result := InstallSkill(skill, destDir, skill.Source.Ref)
-	if result.Action == "ok" {
-		// Use the tree SHA from the lock if available, else write a placeholder
-		commit := ""
-		if hasLock {
-			commit = ls.Commit
+	// Fetch commit first so we can use it as ref (avoid branch race)
+	commit, err := fetchLatestCommit(skill.Source.Repo, skill.Source.Ref)
+	if err != nil {
+		// Commit fetch failed — still try download with branch ref
+		result := InstallSkill(skill, destDir, "")
+		if result.Action == "ok" {
+			result.Error = "installed (commit not recorded)"
 		}
+		return result, nil
+	}
+
+	result := InstallSkill(skill, destDir, commit)
+	if result.Action == "ok" {
 		return result, &LockSkill{Commit: commit, Path: skill.Source.Path}
 	}
 	return result, nil
@@ -296,7 +337,8 @@ func updateOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (InstallR
 		}
 	}
 
-	result := InstallSkill(skill, destDir, skill.Source.Ref)
+	// Use commit SHA as ref to avoid branch race
+	result := InstallSkill(skill, destDir, latestCommit)
 	if result.Action == "ok" {
 		return result, &LockSkill{Commit: latestCommit, Path: skill.Source.Path}
 	}
@@ -349,6 +391,9 @@ func runParallel(m *Manifest, lock *LockFile, manifestPath string, fn func(Skill
 		allResults = append(allResults, r.InstallResult)
 	}
 
+	// Apply manifest symlinks
+	applySymlinks(m)
+
 	lock.Updated = time.Now().Format(time.RFC3339)
 	if err := writeLock(getLockPath(manifestPath), lock); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: write lock: %v\n", err)
@@ -365,6 +410,35 @@ func InstallAll(m *Manifest, lock *LockFile, manifestPath string) []InstallResul
 // UpdateAll checks remote commits and updates skills that have changed.
 func UpdateAll(m *Manifest, lock *LockFile, manifestPath string) []InstallResult {
 	return runParallel(m, lock, manifestPath, updateOneSkill)
+}
+
+// applySymlinks creates all symlinks declared in the manifest.
+func applySymlinks(m *Manifest) {
+	for _, sym := range m.Symlinks {
+		from := expandPath(sym.From)
+		to := expandPath(sym.To)
+
+		// Check if symlink already points to the right place
+		if existing, err := os.Readlink(from); err == nil && existing == to {
+			continue
+		}
+
+		// Remove any existing file/symlink
+		if err := os.RemoveAll(from); err != nil {
+			fmt.Fprintf(os.Stderr, "  warning: remove %s: %v\n", from, err)
+			continue
+		}
+
+		// Ensure parent directory exists
+		if err := os.MkdirAll(filepath.Dir(from), 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "  warning: mkdir %s: %v\n", filepath.Dir(from), err)
+			continue
+		}
+
+		if err := os.Symlink(to, from); err != nil {
+			fmt.Fprintf(os.Stderr, "  warning: symlink %s -> %s: %v\n", from, to, err)
+		}
+	}
 }
 
 func getLockPath(manifestPath string) string {
