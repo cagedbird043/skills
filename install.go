@@ -324,18 +324,34 @@ func installOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (Install
 
 	ls, hasLock := lock.Skills[skill.Name]
 
-	// Locked and on disk → skip
+	// Locked and matching disk → skip without remote checks.
 	if hasLock {
+		skillMD := filepath.Join(destDir, "SKILL.md")
+		diskExists := false
+		if _, err := os.Stat(skillMD); err == nil {
+			diskExists = true
+		}
+
 		if ls.Commit == "" {
-			// Stale lock from older version without a commit SHA.
-			// Don't fill with latest commit — that would make update() think
-			// the skill is up to date when it might not be.
-			// Leave commit empty; update() will detect the mismatch and re-download.
-			if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil {
+			// Stale lock from older versions without a commit SHA.
+			// Only skip when the locked path still matches; otherwise fall through
+			// to fetch a commit and converge the new manifest path.
+			if ls.Path == skill.Source.Path && diskExists {
 				return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
 			}
-		} else if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil {
-			return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
+		} else {
+			if ls.Path == skill.Source.Path && diskExists {
+				return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
+			}
+
+			// Trust the locked commit for install: if the manifest path changed or
+			// the skill is missing on disk, reinstall from the pinned commit without
+			// checking the remote branch.
+			result := InstallSkill(skill, destDir, ls.Commit)
+			if result.Action == "ok" {
+				return result, &LockSkill{Commit: ls.Commit, Path: skill.Source.Path}
+			}
+			return result, nil
 		}
 	}
 
