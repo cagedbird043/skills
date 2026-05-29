@@ -1,0 +1,2 @@
+e9f20356c079a42a892c8bfdf4fa2de595fa7d65f9af5a00fe3f7cf5eab7d33e  skills-linux-amd64
+a03f5fcd311abc4beafeaaa0a34665f06d6c01c9cdda4812453dee2ee2ed7fda  skills-darwin-arm64
