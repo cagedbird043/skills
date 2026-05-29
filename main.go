@@ -54,7 +54,8 @@ func usage() {
 
 %s:
   list              List all skills with installation status
-  install [name]    Install all skills, or a single one
+  install [name]    Install from lock (no remote check — fast)
+  update            Check remote commits, update changed skills
   verify            Check that all skill directories exist
   info <name>       Show details about a specific skill
   completion <shell> Generate shell completion (zsh, bash)
@@ -72,6 +73,7 @@ func usage() {
   skills list
   skills install
   skills install drawio
+  skills update
   skills verify
   skills info drawio
   skills completion zsh > ~/.local/share/zsh/site-functions/_skills
@@ -186,6 +188,12 @@ func main() {
 			target = positional[1]
 		}
 		cmdInstall(m, lock, manifestPath, target)
+	case "update":
+		target := ""
+		if len(positional) > 1 {
+			target = positional[1]
+		}
+		cmdUpdate(m, lock, manifestPath, target)
 	case "verify":
 		cmdVerify(m)
 	case "info":
@@ -228,7 +236,8 @@ _skills() {
   local -a cmds
   cmds=(
     'list:list all skills with status'
-    'install:install all or a specific skill'
+    'install:install from lock (fast, no remote check)'
+    'update:check remote and update changed skills'
     'verify:check skill directories exist'
     'info:show skill details'
     'completion:generate shell completion'
@@ -242,7 +251,7 @@ _skills "$@"
 		fmt.Print(`_skills() {
   local cur prev words cword
   _init_completion || return
-  COMPREPLY=($(compgen -W "list install verify info completion" -- "$cur"))
+  COMPREPLY=($(compgen -W "list install update verify info completion" -- "$cur"))
 }
 complete -F _skills skills
 `)
@@ -283,6 +292,37 @@ func cmdList(m *Manifest, lock *LockFile) {
 	}
 }
 
+func printSummary(results []InstallResult) {
+	upToDate, updated, failed := 0, 0, 0
+	for _, r := range results {
+		switch r.Action {
+		case "ok":
+			if r.Error == "already installed" {
+				upToDate++
+			} else {
+				updated++
+			}
+			ok(r.Name)
+		case "updated":
+			updated++
+			ok("%s (updated)", r.Name)
+		case "failed":
+			failed++
+			fail("%s: %s", r.Name, r.Error)
+		}
+	}
+	if !quiet {
+		fmt.Println()
+		summary := fmt.Sprintf("%d up to date, %d installed, %d failed", upToDate, updated, failed)
+		if failed > 0 {
+			fmt.Println("  " + yellow(summary))
+		} else {
+			fmt.Println("  " + green(summary))
+		}
+	}
+}
+
+// cmdInstall trusts the lock file — no remote commit checks.
 func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string) {
 	if target != "" {
 		var found *SkillEntry
@@ -304,26 +344,23 @@ func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string) {
 		}
 		destDir := filepath.Join(expandPath(targetPath), found.Name)
 
-		latestCommit, err := fetchLatestCommit(found.Source.Repo, found.Source.Ref)
-		if err != nil {
-			fail("%s: %v", found.Name, err)
-			os.Exit(1)
-		}
-
-		if ls, have := lock.Skills[found.Name]; have && ls.Commit == latestCommit {
+		// Trust lock: if locked and SKILL.md exists, skip
+		if _, have := lock.Skills[found.Name]; have {
 			if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil {
 				ok("%s up to date", found.Name)
 				return
 			}
 		}
 
-		result := InstallSkill(*found, destDir, latestCommit)
+		result := InstallSkill(*found, destDir, found.Source.Ref)
 		if result.Action == "ok" {
-			lock.Skills[found.Name] = LockSkill{Commit: latestCommit, Path: found.Source.Path}
-			lock.Updated = time.Now().Format(time.RFC3339)
-			if err := writeLock(getLockPath(manifestPath), lock); err != nil {
-				warn("write lock: %v", err)
+			ls := LockSkill{Path: found.Source.Path}
+			if existing, have := lock.Skills[found.Name]; have {
+				ls.Commit = existing.Commit
 			}
+			lock.Skills[found.Name] = ls
+			lock.Updated = time.Now().Format(time.RFC3339)
+			writeLock(getLockPath(manifestPath), lock)
 			ok("%s installed", found.Name)
 		} else {
 			fail("%s: %s", found.Name, result.Error)
@@ -332,34 +369,40 @@ func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string) {
 	}
 
 	results := InstallAll(m, lock, manifestPath)
-	upToDate, updated, failed := 0, 0, 0
-	for _, r := range results {
-		switch r.Action {
-		case "ok":
-			if r.Error == "already installed" {
-				upToDate++
-			} else {
-				updated++
+	printSummary(results)
+}
+
+// cmdUpdate checks remote commits — makes API calls.
+func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string) {
+	if target != "" {
+		var found *SkillEntry
+		for _, s := range m.Skills {
+			if s.Name == target {
+				found = &s
+				break
 			}
-			ok(r.Name)
-		case "updated":
-			updated++
-			ok("%s (updated)", r.Name)
-		case "failed":
-			failed++
-			fail("%s: %s", r.Name, r.Error)
 		}
+		if found == nil {
+			fail("skill %q not found in manifest", target)
+			os.Exit(1)
+		}
+
+		r, ls := updateOneSkill(*found, lock, m.Directories)
+		if ls != nil {
+			lock.Skills[found.Name] = *ls
+			lock.Updated = time.Now().Format(time.RFC3339)
+			writeLock(getLockPath(manifestPath), lock)
+		}
+		if r.Action == "ok" {
+			ok("%s", found.Name)
+		} else {
+			fail("%s: %s", found.Name, r.Error)
+		}
+		return
 	}
 
-	if !quiet {
-		fmt.Println()
-		summary := fmt.Sprintf("%d up to date, %d installed, %d failed", upToDate, updated, failed)
-		if failed > 0 {
-			fmt.Println("  " + yellow(summary))
-		} else {
-			fmt.Println("  " + green(summary))
-		}
-	}
+	results := UpdateAll(m, lock, manifestPath)
+	printSummary(results)
 }
 
 func cmdVerify(m *Manifest) {

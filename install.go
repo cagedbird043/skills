@@ -234,15 +234,46 @@ func InstallSkill(skill SkillEntry, destDir string, currentCommit string) Instal
 	return r
 }
 
-// processOneSkill handles a single skill: fetch commit, check lock, install if needed.
-// Returns (result, *LockSkill). LockSkill is nil if nothing changed.
-func processOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (InstallResult, *LockSkill) {
+// installOneSkill installs a skill trusting the lock file (no remote commit check).
+// If locked and SKILL.md exists → skip (0 API calls).
+// If locked but SKILL.md missing → re-download (1 tree API call).
+// If not locked → download latest (1 tree API call), record tree SHA.
+func installOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (InstallResult, *LockSkill) {
 	targetPath := resolveTargetPath(skill.Target, dirs)
 	if targetPath == "" {
 		return InstallResult{Name: skill.Name, Action: "failed", Error: fmt.Sprintf("unknown target %q", skill.Target)}, nil
 	}
-	destDir := filepath.Join(targetPath, skill.Name)
-	destDir = expandPath(destDir)
+	destDir := filepath.Join(expandPath(targetPath), skill.Name)
+
+	ls, hasLock := lock.Skills[skill.Name]
+
+	// Locked and on disk → skip
+	if hasLock {
+		if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil {
+			return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
+		}
+	}
+
+	// Need to download (1 tree API call)
+	result := InstallSkill(skill, destDir, skill.Source.Ref)
+	if result.Action == "ok" {
+		// Use the tree SHA from the lock if available, else write a placeholder
+		commit := ""
+		if hasLock {
+			commit = ls.Commit
+		}
+		return result, &LockSkill{Commit: commit, Path: skill.Source.Path}
+	}
+	return result, nil
+}
+
+// updateOneSkill checks remote commit vs lock, installs if newer.
+func updateOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (InstallResult, *LockSkill) {
+	targetPath := resolveTargetPath(skill.Target, dirs)
+	if targetPath == "" {
+		return InstallResult{Name: skill.Name, Action: "failed", Error: fmt.Sprintf("unknown target %q", skill.Target)}, nil
+	}
+	destDir := filepath.Join(expandPath(targetPath), skill.Name)
 
 	ls, hasLock := lock.Skills[skill.Name]
 	lockedCommit := ""
@@ -252,7 +283,11 @@ func processOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (Install
 
 	latestCommit, err := fetchLatestCommit(skill.Source.Repo, skill.Source.Ref)
 	if err != nil {
-		return InstallResult{Name: skill.Name, Action: "failed", Error: fmt.Sprintf("check commit: %v", err)}, nil
+		msg := fmt.Sprintf("check commit: %v", err)
+		if isRateLimit(err) {
+			msg += " — set GITHUB_TOKEN or install gh for higher rate limits"
+		}
+		return InstallResult{Name: skill.Name, Action: "failed", Error: msg}, nil
 	}
 
 	if hasLock && lockedCommit == latestCommit {
@@ -261,16 +296,19 @@ func processOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (Install
 		}
 	}
 
-	// Need to install or update
-	result := InstallSkill(skill, destDir, latestCommit)
+	result := InstallSkill(skill, destDir, skill.Source.Ref)
 	if result.Action == "ok" {
 		return result, &LockSkill{Commit: latestCommit, Path: skill.Source.Path}
 	}
 	return result, nil
 }
 
-// InstallAll installs or updates all skills from the manifest (parallel).
-func InstallAll(m *Manifest, lock *LockFile, manifestPath string) []InstallResult {
+func isRateLimit(err error) bool {
+	return err != nil && (strings.Contains(err.Error(), "403") || strings.Contains(err.Error(), "rate limit"))
+}
+
+// runParallel executes a skill processing function across all skills in parallel.
+func runParallel(m *Manifest, lock *LockFile, manifestPath string, fn func(SkillEntry, *LockFile, []DirEntry) (InstallResult, *LockSkill)) []InstallResult {
 	type jobResult struct {
 		InstallResult
 		lockUpdate *LockSkill
@@ -281,32 +319,28 @@ func InstallAll(m *Manifest, lock *LockFile, manifestPath string) []InstallResul
 	jobs := make(chan SkillEntry, n)
 	results := make(chan jobResult, n)
 
-	// Worker pool: 4 concurrent goroutines
 	var wg sync.WaitGroup
 	for w := 0; w < 4; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for skill := range jobs {
-				r, ls := processOneSkill(skill, lock, m.Directories)
+				r, ls := fn(skill, lock, m.Directories)
 				results <- jobResult{InstallResult: r, lockUpdate: ls, name: skill.Name}
 			}
 		}()
 	}
 
-	// Send jobs
 	for _, skill := range m.Skills {
 		jobs <- skill
 	}
 	close(jobs)
 
-	// Close results when all workers finish
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
-	// Collect results and update lock
 	var allResults []InstallResult
 	for r := range results {
 		if r.lockUpdate != nil {
@@ -315,13 +349,22 @@ func InstallAll(m *Manifest, lock *LockFile, manifestPath string) []InstallResul
 		allResults = append(allResults, r.InstallResult)
 	}
 
-	// Write lock
 	lock.Updated = time.Now().Format(time.RFC3339)
 	if err := writeLock(getLockPath(manifestPath), lock); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: write lock: %v\n", err)
 	}
 
 	return allResults
+}
+
+// InstallAll installs all skills trusting the lock file (no remote commit checks).
+func InstallAll(m *Manifest, lock *LockFile, manifestPath string) []InstallResult {
+	return runParallel(m, lock, manifestPath, installOneSkill)
+}
+
+// UpdateAll checks remote commits and updates skills that have changed.
+func UpdateAll(m *Manifest, lock *LockFile, manifestPath string) []InstallResult {
+	return runParallel(m, lock, manifestPath, updateOneSkill)
 }
 
 func getLockPath(manifestPath string) string {
