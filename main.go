@@ -8,34 +8,79 @@ import (
 	"time"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
+
+var (
+	quiet bool // -q flag
+)
+
+// ── ANSI colors (zero-dependency) ────────────────────────────────────
+
+var useColor = os.Getenv("NO_COLOR") == "" && isTerminal()
+
+func isTerminal() bool {
+	fi, err := os.Stdout.Stat()
+	return err == nil && (fi.Mode()&os.ModeCharDevice) != 0
+}
+
+func green(s string) string {
+	if !useColor { return s }
+	return "\033[32m" + s + "\033[0m"
+}
+func red(s string) string {
+	if !useColor { return s }
+	return "\033[31m" + s + "\033[0m"
+}
+func yellow(s string) string {
+	if !useColor { return s }
+	return "\033[33m" + s + "\033[0m"
+}
+func dim(s string) string {
+	if !useColor { return s }
+	return "\033[2m" + s + "\033[0m"
+}
+func bold(s string) string {
+	if !useColor { return s }
+	return "\033[1m" + s + "\033[0m"
+}
+
+// ── CLI ──────────────────────────────────────────────────────────────
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `skills — Agent skill manager  v%s
+	fmt.Fprintf(os.Stderr, `%s — Agent skill manager  v%s
 
-Usage:
+%s:
   skills <command> [options]
 
-Commands:
-  list              List all managed skills with status
-  install [name]    Install all skills, or a specific one
-  status [name]     Check skill(s) against manifest and lock
-  verify            Verify skill directories exist on disk
+%s:
+  list              List all skills with installation status
+  install [name]    Install all skills, or a single one
+  verify            Check that all skill directories exist
+  info <name>       Show details about a specific skill
+  completion <shell> Generate shell completion (zsh, bash)
 
-Options:
-  --manifest <path>  Path to .manifest.json (default: auto-detect)
-  -m <path>          Same as --manifest
-  --version          Print version
+%s:
+  -m, --manifest <path>  Path to manifest file
+  -q, --quiet            Suppress normal output, show errors only
+      --version          Print version
 
-Environment:
-  SKILLS_MANIFEST    Path to manifest (alternative to --manifest)
+%s:
+  SKILLS_MANIFEST        Path to manifest (alternative to --manifest)
+  NO_COLOR               Set to any value to disable colored output
 
-Default manifest search order:
-  1. --manifest / SKILLS_MANIFEST
-  2. $PWD/.manifest.json
-  3. $PWD/.skills.json
-  4. ~/.config/skills/.manifest.json
-`, version)
+%s:
+  skills list
+  skills install
+  skills install drawio
+  skills verify
+  skills info drawio
+  skills completion zsh > ~/.local/share/zsh/site-functions/_skills
+`, bold("skills"), version,
+		bold("Usage"),
+		bold("Commands"),
+		bold("Options"),
+		bold("Environment"),
+		bold("Examples"))
 }
 
 func findManifest(flagPath string) string {
@@ -64,12 +109,12 @@ func findManifest(flagPath string) string {
 }
 
 func main() {
-	// Parse flags and subcommand
 	manifestPath := ""
 	var positional []string
 
 	for i := 1; i < len(os.Args); i++ {
 		arg := os.Args[i]
+
 		if arg == "--manifest" || arg == "-m" {
 			if i+1 < len(os.Args) {
 				manifestPath = os.Args[i+1]
@@ -78,6 +123,10 @@ func main() {
 			}
 			fmt.Fprintln(os.Stderr, "skills: --manifest requires a path")
 			os.Exit(1)
+		}
+		if arg == "-q" || arg == "--quiet" {
+			quiet = true
+			continue
 		}
 		if arg == "--version" {
 			fmt.Println("skills", version)
@@ -95,6 +144,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	subcmd := positional[0]
+
+	// Commands that don't need a manifest
+	switch subcmd {
+	case "completion":
+		shell := "zsh"
+		if len(positional) > 1 {
+			shell = positional[1]
+		}
+		cmdCompletion(shell)
+		return
+	}
+
 	if manifestPath == "" {
 		manifestPath = findManifest("")
 	}
@@ -103,43 +165,35 @@ func main() {
 		os.Exit(1)
 	}
 
-	subcmd := positional[0]
-
-	// Read manifest
 	m, err := readManifest(manifestPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "skills: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Read lock
 	lockPath := getLockPath(manifestPath)
 	lock, err := readLock(lockPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "skills: warning: %v\n", err)
+		warn("lock: %v", err)
 	}
 
 	switch subcmd {
 	case "list":
 		cmdList(m, lock)
-
 	case "install":
 		target := ""
 		if len(positional) > 1 {
 			target = positional[1]
 		}
 		cmdInstall(m, lock, manifestPath, target)
-
-	case "status":
-		target := ""
-		if len(positional) > 1 {
-			target = positional[1]
-		}
-		cmdStatus(m, lock, target)
-
 	case "verify":
 		cmdVerify(m)
-
+	case "info":
+		if len(positional) < 2 {
+			fmt.Fprintln(os.Stderr, "skills: info requires a skill name")
+			os.Exit(1)
+		}
+		cmdInfo(m, lock, positional[1])
 	default:
 		fmt.Fprintf(os.Stderr, "skills: unknown command %q\n", subcmd)
 		usage()
@@ -147,45 +201,90 @@ func main() {
 	}
 }
 
+// ── output helpers ───────────────────────────────────────────────────
+
+func ok(msg string, args ...interface{}) {
+	if quiet { return }
+	fmt.Printf("  "+green("✓")+" %s\n", fmt.Sprintf(msg, args...))
+}
+
+func fail(msg string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "  "+red("✗")+" %s\n", fmt.Sprintf(msg, args...))
+}
+
+func warn(msg string, args ...interface{}) {
+	if quiet { return }
+	fmt.Fprintf(os.Stderr, "  "+yellow("⚠")+" %s\n", fmt.Sprintf(msg, args...))
+}
+
 // ── commands ─────────────────────────────────────────────────────────
 
+func cmdCompletion(shell string) {
+	switch shell {
+	case "zsh":
+		fmt.Print(`#compdef skills
+
+_skills() {
+  local -a cmds
+  cmds=(
+    'list:list all skills with status'
+    'install:install all or a specific skill'
+    'verify:check skill directories exist'
+    'info:show skill details'
+    'completion:generate shell completion'
+  )
+  _describe -t commands 'skills command' cmds
+}
+
+_skills "$@"
+`)
+	case "bash":
+		fmt.Print(`_skills() {
+  local cur prev words cword
+  _init_completion || return
+  COMPREPLY=($(compgen -W "list install verify info completion" -- "$cur"))
+}
+complete -F _skills skills
+`)
+	default:
+		fmt.Fprintf(os.Stderr, "skills: unsupported shell %q (supported: zsh, bash)\n", shell)
+		os.Exit(1)
+	}
+}
+
 func cmdList(m *Manifest, lock *LockFile) {
-	// Build name→target map
 	dirNames := make(map[string]string)
 	for _, d := range m.Directories {
 		dirNames[d.Name] = d.Path
 	}
 
-	fmt.Printf("%-24s %-12s %s\n", "SKILL", "TARGET", "STATUS")
-	fmt.Println(strings.Repeat("─", 56))
+	if !quiet {
+		fmt.Printf("%-24s %-12s %s\n", bold("SKILL"), bold("TARGET"), bold("STATUS"))
+		fmt.Println(dim(strings.Repeat("─", 60)))
+	}
 	for _, s := range m.Skills {
 		dirPath := dirNames[s.Target]
 		diskPath := filepath.Join(expandPath(dirPath), s.Name)
 
-		status := "─"
+		var status string
 		if _, err := os.Stat(filepath.Join(diskPath, "SKILL.md")); err == nil {
 			if ls, ok := lock.Skills[s.Name]; ok && ls.Commit != "" {
-				status = "✓ " + ls.Commit[:8]
+				status = green("✓") + " " + ls.Commit[:8]
 			} else {
-				status = "✓ unknown commit"
+				status = green("✓") + " installed"
 			}
 		} else {
-			status = "✗ not installed"
+			status = red("✗") + " not installed"
 		}
 
-		targetLabel := s.Target
-		// Truncate if needed
-		if len(targetLabel) > 11 {
-			targetLabel = targetLabel[:11]
+		if !quiet {
+			fmt.Printf("  %-22s %-12s %s\n", s.Name, s.Target, status)
 		}
-
-		fmt.Printf("  %-22s %-12s %s\n", s.Name, targetLabel, status)
 	}
 }
 
 func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string) {
 	if target != "" {
-		// Single skill install
 		var found *SkillEntry
 		for _, s := range m.Skills {
 			if s.Name == target {
@@ -194,28 +293,26 @@ func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string) {
 			}
 		}
 		if found == nil {
-			fmt.Fprintf(os.Stderr, "skills: skill %q not found in manifest\n", target)
+			fail("skill %q not found in manifest", target)
 			os.Exit(1)
 		}
 
 		targetPath := resolveTargetPath(found.Target, m.Directories)
 		if targetPath == "" {
-			fmt.Fprintf(os.Stderr, "skills: unknown target %q for %s\n", found.Target, found.Name)
+			fail("unknown target %q for %s", found.Target, found.Name)
 			os.Exit(1)
 		}
-
 		destDir := filepath.Join(expandPath(targetPath), found.Name)
 
 		latestCommit, err := fetchLatestCommit(found.Source.Repo, found.Source.Ref)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "skills: %s: %v\n", found.Name, err)
+			fail("%s: %v", found.Name, err)
 			os.Exit(1)
 		}
 
-		// Check lock
-		if ls, ok := lock.Skills[found.Name]; ok && ls.Commit == latestCommit {
+		if ls, have := lock.Skills[found.Name]; have && ls.Commit == latestCommit {
 			if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil {
-				fmt.Printf("  ✓ %s (already up to date)\n", found.Name)
+				ok("%s up to date", found.Name)
 				return
 			}
 		}
@@ -223,45 +320,46 @@ func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string) {
 		result := InstallSkill(*found, destDir, latestCommit)
 		if result.Action == "ok" {
 			lock.Skills[found.Name] = LockSkill{Commit: latestCommit, Path: found.Source.Path}
-			lock.Updated = getCurrentTime()
+			lock.Updated = time.Now().Format(time.RFC3339)
 			if err := writeLock(getLockPath(manifestPath), lock); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: write lock: %v\n", err)
+				warn("write lock: %v", err)
 			}
-			fmt.Printf("  ✓ %s installed\n", found.Name)
+			ok("%s installed", found.Name)
 		} else {
-			fmt.Fprintf(os.Stderr, "  ✗ %s: %s\n", found.Name, result.Error)
+			fail("%s: %s", found.Name, result.Error)
 		}
 		return
 	}
 
-	// Install all
 	results := InstallAll(m, lock, manifestPath)
-	ok, updated, failed := 0, 0, 0
+	upToDate, updated, failed := 0, 0, 0
 	for _, r := range results {
 		switch r.Action {
 		case "ok":
 			if r.Error == "already installed" {
-				ok++
+				upToDate++
 			} else {
 				updated++
 			}
-			fmt.Printf("  ✓ %s\n", r.Name)
+			ok(r.Name)
 		case "updated":
 			updated++
-			fmt.Printf("  ✓ %s (updated)\n", r.Name)
+			ok("%s (updated)", r.Name)
 		case "failed":
 			failed++
-			fmt.Fprintf(os.Stderr, "  ✗ %s: %s\n", r.Name, r.Error)
+			fail("%s: %s", r.Name, r.Error)
 		}
 	}
-	fmt.Println()
-	fmt.Printf("  ✓ %d up to date, %d installed, %d failed\n", ok, updated, failed)
-}
 
-func cmdStatus(m *Manifest, lock *LockFile, target string) {
-	_ = lock
-	_ = target
-	fmt.Println("status: not yet implemented")
+	if !quiet {
+		fmt.Println()
+		summary := fmt.Sprintf("%d up to date, %d installed, %d failed", upToDate, updated, failed)
+		if failed > 0 {
+			fmt.Println("  " + yellow(summary))
+		} else {
+			fmt.Println("  " + green(summary))
+		}
+	}
 }
 
 func cmdVerify(m *Manifest) {
@@ -269,32 +367,64 @@ func cmdVerify(m *Manifest) {
 	for _, s := range m.Skills {
 		targetPath := resolveTargetPath(s.Target, m.Directories)
 		if targetPath == "" {
-			fmt.Fprintf(os.Stderr, "  ✗ %s: unknown target %q\n", s.Name, s.Target)
+			fail("%s: unknown target %q", s.Name, s.Target)
 			bad++
 			continue
 		}
 		skillDir := filepath.Join(expandPath(targetPath), s.Name)
 		sm := filepath.Join(skillDir, "SKILL.md")
 		if _, err := os.Stat(sm); err == nil {
-			fmt.Printf("  ✓ %s\n", s.Name)
+			ok(s.Name)
 		} else {
-			fmt.Fprintf(os.Stderr, "  ✗ %s: SKILL.md not found at %s\n", s.Name, sm)
+			fail("%s: not found at %s", s.Name, sm)
 			bad++
 		}
 	}
-	if bad > 0 {
-		fmt.Printf("\n  %d skill(s) missing\n", bad)
-	} else {
-		fmt.Println("\n  All skills present.")
+	if !quiet {
+		if bad > 0 {
+			fmt.Println("\n  " + yellow(fmt.Sprintf("%d skill(s) missing", bad)))
+		} else {
+			fmt.Println("\n  " + green("All skills present."))
+		}
 	}
 }
 
-func getCurrentTime() string {
-	t := timeNow()
-	return t.Format("2006-01-02T15:04:05+08:00")
-}
+func cmdInfo(m *Manifest, lock *LockFile, name string) {
+	var found *SkillEntry
+	for _, s := range m.Skills {
+		if s.Name == name {
+			found = &s
+			break
+		}
+	}
+	if found == nil {
+		fail("skill %q not found in manifest", name)
+		os.Exit(1)
+	}
 
-// timeNow is a variable so tests can override it
-var timeNow = func() time.Time {
-	return time.Now()
+	targetPath := resolveTargetPath(found.Target, m.Directories)
+	diskPath := ""
+	if targetPath != "" {
+		diskPath = filepath.Join(expandPath(targetPath), found.Name)
+	}
+
+	onDisk := false
+	if diskPath != "" {
+		if _, err := os.Stat(filepath.Join(diskPath, "SKILL.md")); err == nil {
+			onDisk = true
+		}
+	}
+
+	fmt.Printf("  %s: %s\n", bold("name"), found.Name)
+	fmt.Printf("  %s: %s\n", bold("target"), found.Target)
+	fmt.Printf("  %s: %s\n", bold("repo"), found.Source.Repo)
+	fmt.Printf("  %s: %s\n", bold("ref"), found.Source.Ref)
+	fmt.Printf("  %s: %s\n", bold("path"), found.Source.Path)
+	if diskPath != "" {
+		fmt.Printf("  %s: %s\n", bold("on disk"), diskPath)
+		fmt.Printf("  %s: %v\n", bold("installed"), onDisk)
+	}
+	if ls, ok := lock.Skills[found.Name]; ok {
+		fmt.Printf("  %s: %s\n", bold("locked commit"), ls.Commit)
+	}
 }
