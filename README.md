@@ -55,8 +55,8 @@ Create a `.manifest.json`:
   "directories": [
     { "name": "shared", "path": "~/.agents/skills" }
   ],
-  "symlinks": [
-    { "from": "~/.claude/skills", "to": "~/.agents/skills" }
+  "mirrors": [
+    { "from": "shared", "to": "claude" }
   ],
   "skills": [
     {

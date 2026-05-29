@@ -530,6 +530,20 @@ func TestGetLockPath(t *testing.T) {
 	}
 }
 
+func TestInstallOneSkill_NoFilesFoundFails(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+
+	result := InstallSkill(
+		SkillEntry{Name: "test", Source: SourceEntry{Repo: "anthropics/skills", Ref: "main", Path: "skills/definitely-does-not-exist"}},
+		filepath.Join(sharedDir, "test"), "",
+	)
+
+	if result.Action != "failed" {
+		t.Fatalf("expected failure for nonexistent source path, got %+v", result)
+	}
+}
+
 func TestIsRateLimit(t *testing.T) {
 	if !isRateLimit(fmt.Errorf("HTTP 403")) {
 		t.Fatal("should detect 403")

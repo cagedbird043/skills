@@ -262,8 +262,8 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 	}
 
 	if files == 0 && failed == 0 {
-		r.Action = "ok"
-		r.Error = "already installed"
+		r.Action = "failed"
+		r.Error = "no files found under source path " + prefix
 		return r
 	}
 
@@ -562,6 +562,11 @@ func applyMirrors(m *Manifest) {
 				src := filepath.Join(srcDir, s.Name)
 				dst := filepath.Join(dstDir, s.Name)
 
+				// Only create mirror if the source skill actually exists on disk
+				if _, err := os.Stat(filepath.Join(src, "SKILL.md")); err != nil {
+					continue
+				}
+
 				// Check existing symlink
 				if existing, err := os.Readlink(dst); err == nil && existing == src {
 					continue // already correct
@@ -575,7 +580,6 @@ func applyMirrors(m *Manifest) {
 				os.Remove(dst) // remove stale symlink
 
 				// Create parent dir if needed
-				os.MkdirAll(filepath.Dir(src), 0755)
 				os.MkdirAll(dstDir, 0755)
 
 				if err := os.Symlink(src, dst); err != nil {
@@ -584,24 +588,29 @@ func applyMirrors(m *Manifest) {
 			}
 		}
 
-		// Remove orphan symlinks that are managed by this mirror
-		// (symlinks pointing into the source directory that are no longer wanted)
-		if entries, err := os.ReadDir(dstDir); err == nil {
-			for _, e := range entries {
-				path := filepath.Join(dstDir, e.Name())
-				fi, err := os.Lstat(path)
-				if err != nil || fi.Mode()&os.ModeSymlink == 0 {
-					continue
-				}
-				target, err := os.Readlink(path)
-				if err != nil || !strings.HasPrefix(target, srcDir) {
-					continue // pointing outside the source pool — not our managed symlink
-				}
-				if !wanted[e.Name()] {
-					os.Remove(path) // orphan
+			// Remove orphan symlinks — only those pointing *into* the source directory
+			// (with proper path boundary, so /tmp/shared-other doesn't match /tmp/shared)
+			srcPrefix := filepath.Clean(srcDir) + string(os.PathSeparator)
+			if entries, err := os.ReadDir(dstDir); err == nil {
+				for _, e := range entries {
+					path := filepath.Join(dstDir, e.Name())
+					fi, err := os.Lstat(path)
+					if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+						continue
+					}
+					target, err := os.Readlink(path)
+					if err != nil {
+						continue
+					}
+					cleanTarget := filepath.Clean(target)
+					if cleanTarget != filepath.Clean(srcDir) && !strings.HasPrefix(cleanTarget, srcPrefix) {
+						continue // pointing outside the source pool — not our managed symlink
+					}
+					if !wanted[e.Name()] {
+						os.Remove(path) // orphan
+					}
 				}
 			}
-		}
 	}
 }
 
