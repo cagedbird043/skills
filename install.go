@@ -24,11 +24,14 @@ func githubToken() string {
 	if t := os.Getenv("GITHUB_TOKEN"); t != "" {
 		return t
 	}
-	// Try gh CLI
-	cmd := exec.Command("gh", "auth", "token")
-	out, err := cmd.Output()
-	if err == nil {
-		return strings.TrimSpace(string(out))
+	// Try gh CLI — search common locations
+	ghPaths := []string{"gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/home/linuxbrew/.linuxbrew/bin/gh"}
+	for _, p := range ghPaths {
+		cmd := exec.Command(p, "auth", "token")
+		out, err := cmd.Output()
+		if err == nil {
+			return strings.TrimSpace(string(out))
+		}
 	}
 	return ""
 }
