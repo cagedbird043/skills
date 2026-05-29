@@ -58,6 +58,12 @@ func githubGET(url string) (*http.Response, error) {
 	return httpClient.Do(req)
 }
 
+// ── injectable function vars (for testing without real GitHub) ──────
+
+var fetchLatestCommitFn = fetchLatestCommit
+var fetchTreeFn = fetchTree
+var downloadFileFn = downloadFile
+
 // ── GitHub tree / commit SHA ─────────────────────────────────────────
 
 type treeEntry struct {
@@ -183,7 +189,7 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 	}
 	prefix := skill.Source.Path
 
-	tree, err := fetchTree(repo, ref)
+	tree, err := fetchTreeFn(repo, ref)
 	if err != nil {
 		r.Action = "failed"
 		r.Error = fmt.Sprintf("tree: %v", err)
@@ -246,7 +252,7 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 			continue
 		}
 
-		data, err := downloadFile(repo, ref, entry.Path)
+		data, err := downloadFileFn(repo, ref, entry.Path)
 		if err != nil {
 			failed++
 			continue
@@ -356,7 +362,7 @@ func installOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (Install
 	}
 
 	// Fetch commit first so we can use it as ref (avoid branch race)
-	commit, err := fetchLatestCommit(skill.Source.Repo, skill.Source.Ref)
+	commit, err := fetchLatestCommitFn(skill.Source.Repo, skill.Source.Ref)
 	if err != nil {
 		msg := fmt.Sprintf("check commit: %v", err)
 		if isRateLimit(err) {
@@ -386,7 +392,7 @@ func updateOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (InstallR
 		lockedCommit = ls.Commit
 	}
 
-	latestCommit, err := fetchLatestCommit(skill.Source.Repo, skill.Source.Ref)
+	latestCommit, err := fetchLatestCommitFn(skill.Source.Repo, skill.Source.Ref)
 	if err != nil {
 		msg := fmt.Sprintf("check commit: %v", err)
 		if isRateLimit(err) {

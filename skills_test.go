@@ -8,6 +8,33 @@ import (
 	"testing"
 )
 
+// ── test setup — injectable GitHub fakes ─────────────────────────────
+
+func fakeGitHub() {
+	fetchLatestCommitFn = func(_, _ string) (string, error) {
+		return "fakecommit1234567890123456789012345678901234", nil
+	}
+	fetchTreeFn = func(_, _ string) (tree []treeEntry, err error) {
+		// Return all possible test paths so tests don't depend on specific tree matches
+		return []treeEntry{
+			{Path: "skills/test/SKILL.md", Mode: "100644", Type: "blob"},
+			{Path: "skills/test/README.md", Mode: "100644", Type: "blob"},
+			{Path: "skills/new-path/SKILL.md", Mode: "100644", Type: "blob"},
+			{Path: "skills/old-path/SKILL.md", Mode: "100644", Type: "blob"},
+		}, nil
+	}
+	downloadFileFn = func(_, _, filePath string) ([]byte, error) {
+		name := filepath.Base(filePath)
+		return []byte("# " + name), nil
+	}
+}
+
+func restoreGitHub() {
+	fetchLatestCommitFn = fetchLatestCommit
+	fetchTreeFn = fetchTree
+	downloadFileFn = downloadFile
+}
+
 // ── helpers ──────────────────────────────────────────────────────────
 
 func writeFile(t *testing.T, path, content string) {
@@ -340,6 +367,40 @@ func TestApplyMirrors_RealFileNotReplaced(t *testing.T) {
 	}
 }
 
+func TestApplyMirrors_NoSymlinkForMissingSource(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	claudeDir := filepath.Join(dir, "claude")
+
+	os.MkdirAll(sharedDir, 0755)
+	os.MkdirAll(claudeDir, 0755)
+
+	// Source skill directory exists but has no SKILL.md
+	srcSkill := filepath.Join(sharedDir, "half-installed")
+	os.MkdirAll(srcSkill, 0755)
+
+	m := &Manifest{
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+			{Name: "claude", Path: claudeDir},
+		},
+		Mirrors: []MirrorEntry{
+			{From: "shared", To: "claude"},
+		},
+		Skills: []SkillEntry{
+			{Name: "half-installed", Target: "shared", Source: SourceEntry{Repo: "a/b", Path: "skills/half"}},
+		},
+	}
+
+	applyMirrors(m)
+
+	// Should NOT create a symlink for a source without SKILL.md
+	dst := filepath.Join(claudeDir, "half-installed")
+	if _, err := os.Lstat(dst); err == nil {
+		t.Fatal("mirror created symlink for source without SKILL.md")
+	}
+}
+
 func TestApplyMirrors_ExternalSymlinkNotRemoved(t *testing.T) {
 	dir := t.TempDir()
 	sharedDir := filepath.Join(dir, "shared")
@@ -412,12 +473,15 @@ func TestInstallOneSkill_SkipsWhenLockedAndOnDisk(t *testing.T) {
 }
 
 func TestInstallOneSkill_ReinstallsWhenLockedButDiskMissing(t *testing.T) {
+	fakeGitHub()
+	defer restoreGitHub()
+
 	dir := t.TempDir()
 	sharedDir := filepath.Join(dir, "shared")
 
 	lock := &LockFile{
 		Skills: map[string]LockSkill{
-			"drawio": {Commit: "9b74459b5ae5aad67781c4a9de1093605d620f23", Path: "plugins/project-documenter/skills/drawio"},
+			"test": {Commit: "fakecommit1234567890123456789012345678901234", Path: "skills/test"},
 		},
 	}
 
@@ -427,16 +491,19 @@ func TestInstallOneSkill_ReinstallsWhenLockedButDiskMissing(t *testing.T) {
 		},
 	}
 
-	// This should try to re-download since SKILL.md is missing
-	// We expect it to fail because there's no network in test
-	result, _ := installOneSkill(
-		SkillEntry{Name: "drawio", Target: "shared", Source: SourceEntry{Repo: "github/awesome-copilot", Ref: "main", Path: "plugins/project-documenter/skills/drawio"}},
+	result, ls := installOneSkill(
+		SkillEntry{Name: "test", Target: "shared", Source: SourceEntry{Repo: "fake/repo", Ref: "main", Path: "skills/test"}},
 		lock, m.Directories,
 	)
 
-	// Either fails with tree error (no network) or succeeds (if cached)
-	if result.Action != "failed" {
-		t.Logf("unexpected success (might have network): %+v", result)
+	if result.Action != "ok" {
+		t.Fatalf("expected install to succeed with fakes, got %+v", result)
+	}
+	if ls == nil || ls.Commit != "fakecommit1234567890123456789012345678901234" {
+		t.Fatalf("expected lock update with fakecommit, got %+v", ls)
+	}
+	if _, err := os.Stat(filepath.Join(sharedDir, "test", "SKILL.md")); err != nil {
+		t.Fatalf("SKILL.md not installed: %v", err)
 	}
 }
 
@@ -478,45 +545,68 @@ func TestInstallOneSkill_EmptyLockWithDisk(t *testing.T) {
 
 // ── updateOneSkill path change detection ─────────────────────────────
 
-func TestUpdateOneSkill_SkipsWhenPathAndCommitMatch(t *testing.T) {
-	lock := &LockFile{
-		Skills: map[string]LockSkill{
-			"test": {Commit: "abc123", Path: "skills/test"},
-		},
-	}
-
-	ls := lock.Skills["test"]
-	hasLock := true
-	lockedCommit := ls.Commit
-
-	if hasLock && lockedCommit == "abc123" && ls.Path == "skills/test" {
-		// This is the skip condition — it's correct
-	} else {
-		t.Fatal("comparison logic incorrect: should have detected match")
-	}
-}
-
 func TestUpdateOneSkill_PathChangeTriggersUpdate(t *testing.T) {
+	fakeGitHub()
+	defer restoreGitHub()
+
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+
+	// Lock says old path with a specific commit
 	lock := &LockFile{
 		Skills: map[string]LockSkill{
 			"test": {Commit: "abc123", Path: "skills/old-path"},
 		},
 	}
 
-	ls := lock.Skills["test"]
-	hasLock := true
-	lockedCommit := ls.Commit
-
-	// Lock path is "skills/old-path", skill path is "skills/new-path"
-	// Even if commit matches, path differs → should NOT skip
-	wouldSkip := hasLock && lockedCommit == "abc123" && ls.Path == "skills/new-path"
-	if wouldSkip {
-		t.Fatal("updateOneSkill comparison: path changed but skip condition matched — BUG")
+	m := &Manifest{
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
 	}
-	// Verify the correct comparison: path must match too
-	wouldSkip = hasLock && lockedCommit == "abc123" && ls.Path == "skills/old-path"
-	if !wouldSkip {
-		t.Fatal("updateOneSkill comparison: same path should allow skip")
+
+	// Path changed, but fake commit matches locked commit → should still skip?
+	// No — the path differs, so updateOneSkill must NOT skip
+	result, _ := updateOneSkill(
+		SkillEntry{Name: "test", Target: "shared", Source: SourceEntry{Repo: "fake/repo", Ref: "main", Path: "skills/new-path"}},
+		lock, m.Directories,
+	)
+
+	if result.Action != "ok" {
+		t.Fatalf("expected update to succeed (path differs, should reinstall), got %+v", result)
+	}
+}
+
+func TestUpdateOneSkill_SkipsWhenPathAndCommitMatch_Integration(t *testing.T) {
+	fakeGitHub()
+	defer restoreGitHub()
+
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	skillDir := filepath.Join(sharedDir, "test")
+	os.MkdirAll(skillDir, 0755)
+	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# test")
+
+	lock := &LockFile{
+		Skills: map[string]LockSkill{
+			"test": {Commit: "fakecommit1234567890123456789012345678901234", Path: "skills/test"},
+		},
+	}
+
+	m := &Manifest{
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+	}
+
+	// Commit and path both match → should skip
+	result, _ := updateOneSkill(
+		SkillEntry{Name: "test", Target: "shared", Source: SourceEntry{Repo: "fake/repo", Ref: "main", Path: "skills/test"}},
+		lock, m.Directories,
+	)
+
+	if result.Action != "ok" || result.Error != "already installed" {
+		t.Fatalf("expected skip (commit+path match), got %+v", result)
 	}
 }
 
