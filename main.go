@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const version = "0.3.0"
+const version = "0.3.1"
 
 var (
 	quiet bool // -q flag
@@ -337,33 +337,19 @@ func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string) {
 			os.Exit(1)
 		}
 
-		targetPath := resolveTargetPath(found.Target, m.Directories)
-		if targetPath == "" {
-			fail("unknown target %q for %s", found.Target, found.Name)
-			os.Exit(1)
-		}
-		destDir := filepath.Join(expandPath(targetPath), found.Name)
-
-		// Trust lock: if locked and SKILL.md exists, skip
-		if _, have := lock.Skills[found.Name]; have {
-			if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil {
-				ok("%s up to date", found.Name)
-				return
-			}
-		}
-
-		result := InstallSkill(*found, destDir, found.Source.Ref)
-		if result.Action == "ok" {
-			ls := LockSkill{Path: found.Source.Path}
-			if existing, have := lock.Skills[found.Name]; have {
-				ls.Commit = existing.Commit
-			}
-			lock.Skills[found.Name] = ls
+		// Reuse the same logic as bulk install
+		r, ls := installOneSkill(*found, lock, m.Directories)
+		if ls != nil {
+			lock.Skills[found.Name] = *ls
 			lock.Updated = time.Now().Format(time.RFC3339)
 			writeLock(getLockPath(manifestPath), lock)
-			ok("%s installed", found.Name)
+		}
+		// Apply symlinks for single install too
+		applySymlinks(m)
+		if r.Action == "ok" {
+			ok("%s", found.Name)
 		} else {
-			fail("%s: %s", found.Name, result.Error)
+			fail("%s: %s", found.Name, r.Error)
 		}
 		return
 	}
@@ -393,6 +379,7 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string) {
 			lock.Updated = time.Now().Format(time.RFC3339)
 			writeLock(getLockPath(manifestPath), lock)
 		}
+		applySymlinks(m)
 		if r.Action == "ok" {
 			ok("%s", found.Name)
 		} else {

@@ -80,7 +80,8 @@ recording the exact commit of each installed skill.
 | Command | Description |
 |---------|-------------|
 | `skills list` | List all skills with installation status |
-| `skills install [name]` | Install all skills, or a specific one |
+| `skills install [name]` | Install from lock (zero API calls if locked) |
+| `skills update [name]` | Check remote commits, update changed skills |
 | `skills verify` | Check all skill directories exist on disk |
 | `skills info <name>` | Show source, path, commit, and disk location |
 | `skills completion <shell>` | Generate shell completion (zsh, bash) |

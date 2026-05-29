@@ -180,14 +180,27 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 		return r
 	}
 
-	// Download to temp directory for atomic install
-	tmpDir, err := os.MkdirTemp("", "skills-"+skill.Name)
+	// Ensure parent directory exists before creating temp dir (same filesystem)
+	parent := filepath.Dir(destDir)
+	if err := os.MkdirAll(parent, 0755); err != nil {
+		r.Action = "failed"
+		r.Error = fmt.Sprintf("mkdir parent %s: %v", parent, err)
+		return r
+	}
+
+	// Create temp dir on the same filesystem as destDir (avoids cross-device rename)
+	tmpDir, err := os.MkdirTemp(parent, "."+skill.Name+".tmp-")
 	if err != nil {
 		r.Action = "failed"
 		r.Error = fmt.Sprintf("temp dir: %v", err)
 		return r
 	}
-	defer os.RemoveAll(tmpDir)
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			os.RemoveAll(tmpDir)
+		}
+	}()
 
 	// Filter entries under the prefix
 	prefixSlash := prefix + "/"
@@ -244,14 +257,32 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 		return r
 	}
 
-	// Atomic replace — remove old, move new
-	os.RemoveAll(destDir)
-	if err := os.Rename(tmpDir, destDir); err != nil {
-		r.Action = "failed"
-		r.Error = fmt.Sprintf("rename to %s: %v", destDir, err)
-		return r
+	// Transactional replace: rename old → tmpOld, rename new → dest, then remove old
+	oldTmp := parent + "/." + skill.Name + ".old-" + tmpDir[strings.LastIndex(tmpDir, ".")+1:]
+	if _, err := os.Stat(destDir); err == nil {
+		if err := os.Rename(destDir, oldTmp); err != nil {
+			r.Action = "failed"
+			r.Error = fmt.Sprintf("backup old %s: %v", destDir, err)
+			return r
+		}
+		// If the final rename fails, try to restore the backup
+		if err := os.Rename(tmpDir, destDir); err != nil {
+			os.Rename(oldTmp, destDir) // best-effort rollback
+			os.RemoveAll(tmpDir)
+			r.Action = "failed"
+			r.Error = fmt.Sprintf("rename %s: %v", destDir, err)
+			return r
+		}
+		os.RemoveAll(oldTmp)
+	} else {
+		// Fresh install — just rename
+		if err := os.Rename(tmpDir, destDir); err != nil {
+			r.Action = "failed"
+			r.Error = fmt.Sprintf("rename %s: %v", destDir, err)
+			return r
+		}
 	}
-	tmpDir = "" // prevent defer RemoveAll
+	cleanupTmp = false // tmpDir was moved to destDir
 
 	if failed > 0 {
 		r.Action = "failed"
@@ -293,12 +324,11 @@ func installOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (Install
 	// Fetch commit first so we can use it as ref (avoid branch race)
 	commit, err := fetchLatestCommit(skill.Source.Repo, skill.Source.Ref)
 	if err != nil {
-		// Commit fetch failed — still try download with branch ref
-		result := InstallSkill(skill, destDir, "")
-		if result.Action == "ok" {
-			result.Error = "installed (commit not recorded)"
+		msg := fmt.Sprintf("check commit: %v", err)
+		if isRateLimit(err) {
+			msg += " — set GITHUB_TOKEN or install gh for higher rate limits"
 		}
-		return result, nil
+		return InstallResult{Name: skill.Name, Action: "failed", Error: msg}, nil
 	}
 
 	result := InstallSkill(skill, destDir, commit)
@@ -419,13 +449,23 @@ func applySymlinks(m *Manifest) {
 		to := expandPath(sym.To)
 
 		// Check if symlink already points to the right place
-		if existing, err := os.Readlink(from); err == nil && existing == to {
+		if existing, err := os.Readlink(from); err == nil {
+			if existing == to {
+				continue
+			}
+			// Wrong symlink — remove and recreate
+			os.Remove(from)
+		} else if !os.IsNotExist(err) {
+			// Lstat error (not "not exist") — can't proceed
+			fmt.Fprintf(os.Stderr, "  warning: stat %s: %v\n", from, err)
 			continue
+		} else {
+			// from doesn't exist — good, we'll create it
 		}
 
-		// Remove any existing file/symlink
-		if err := os.RemoveAll(from); err != nil {
-			fmt.Fprintf(os.Stderr, "  warning: remove %s: %v\n", from, err)
+		// If from exists and is not a symlink, refuse to replace
+		if fi, err := os.Lstat(from); err == nil && fi.Mode()&os.ModeSymlink == 0 {
+			fmt.Fprintf(os.Stderr, "  ⚠  %s exists and is not a symlink; refusing to replace\n", from)
 			continue
 		}
 
