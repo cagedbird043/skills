@@ -455,8 +455,9 @@ func runParallel(m *Manifest, lock *LockFile, manifestPath string, fn func(Skill
 		allResults = append(allResults, r.InstallResult)
 	}
 
-	// Apply manifest symlinks
+	// Apply manifest symlinks + claude shared skill mirrors
 	applySymlinks(m)
+	applyClaudeMirrors(m)
 
 	lock.Updated = time.Now().Format(time.RFC3339)
 	if err := writeLock(getLockPath(manifestPath), lock); err != nil {
@@ -513,6 +514,76 @@ func applySymlinks(m *Manifest) {
 
 		if err := os.Symlink(to, from); err != nil {
 			fmt.Fprintf(os.Stderr, "  warning: symlink %s -> %s: %v\n", from, to, err)
+		}
+	}
+}
+
+// applyClaudeMirrors creates individual symlinks in the claude directory
+// pointing to shared pool skills. This replaces the old blanket symlink:
+//   ~/.claude/skills → ~/.agents/skills
+// With per-skill symlinks:
+//   ~/.claude/skills/drawio → ~/.agents/skills/drawio
+// This allows claude-exclusive skills to coexist in the same directory.
+func applyClaudeMirrors(m *Manifest) {
+	// Find claude and shared directory paths
+	claudeDir := ""
+	sharedDir := ""
+	for _, d := range m.Directories {
+		switch d.Name {
+		case "claude":
+			claudeDir = expandPath(d.Path)
+		case "shared":
+			sharedDir = expandPath(d.Path)
+		}
+	}
+	if claudeDir == "" || sharedDir == "" {
+		return // no claude directory configured
+	}
+
+	// If claudeDir itself is a symlink (old blanket symlink), remove it
+	if fi, err := os.Lstat(claudeDir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		os.Remove(claudeDir)
+	}
+
+	// Ensure claude directory exists
+	os.MkdirAll(claudeDir, 0755)
+
+	// Build set of shared skills that should have a symlink
+	wanted := make(map[string]bool)
+	for _, s := range m.Skills {
+		if s.Target == "shared" {
+			wanted[s.Name] = true
+
+			src := filepath.Join(sharedDir, s.Name)
+			dst := filepath.Join(claudeDir, s.Name)
+
+			// Check existing
+			if existing, err := os.Readlink(dst); err == nil && existing == src {
+				continue // already correct
+			}
+
+			// Remove any non-symlink that might be in the way
+			if fi, err := os.Lstat(dst); err == nil && fi.Mode()&os.ModeSymlink == 0 {
+				fmt.Fprintf(os.Stderr, "  ⚠  %s exists and is not a symlink; refusing to replace\n", dst)
+				continue
+			}
+			os.Remove(dst) // remove stale symlink or nothing
+
+			if err := os.Symlink(src, dst); err != nil {
+				fmt.Fprintf(os.Stderr, "  warning: symlink %s -> %s: %v\n", dst, src, err)
+			}
+		}
+	}
+
+	// Clean up orphan symlinks in claude directory (symlinks pointing to skills no longer shared)
+	if entries, err := os.ReadDir(claudeDir); err == nil {
+		for _, e := range entries {
+			path := filepath.Join(claudeDir, e.Name())
+			if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+				if !wanted[e.Name()] {
+					os.Remove(path)
+				}
+			}
 		}
 	}
 }
