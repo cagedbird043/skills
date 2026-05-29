@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -230,63 +231,85 @@ func InstallSkill(skill SkillEntry, destDir string, currentCommit string) Instal
 	return r
 }
 
-// InstallAll installs or updates all skills from the manifest.
+// processOneSkill handles a single skill: fetch commit, check lock, install if needed.
+// Returns (result, *LockSkill). LockSkill is nil if nothing changed.
+func processOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (InstallResult, *LockSkill) {
+	targetPath := resolveTargetPath(skill.Target, dirs)
+	if targetPath == "" {
+		return InstallResult{Name: skill.Name, Action: "failed", Error: fmt.Sprintf("unknown target %q", skill.Target)}, nil
+	}
+	destDir := filepath.Join(targetPath, skill.Name)
+	destDir = expandPath(destDir)
+
+	ls, hasLock := lock.Skills[skill.Name]
+	lockedCommit := ""
+	if hasLock {
+		lockedCommit = ls.Commit
+	}
+
+	latestCommit, err := fetchLatestCommit(skill.Source.Repo, skill.Source.Ref)
+	if err != nil {
+		return InstallResult{Name: skill.Name, Action: "failed", Error: fmt.Sprintf("check commit: %v", err)}, nil
+	}
+
+	if hasLock && lockedCommit == latestCommit {
+		if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil {
+			return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
+		}
+	}
+
+	// Need to install or update
+	result := InstallSkill(skill, destDir, latestCommit)
+	if result.Action == "ok" {
+		return result, &LockSkill{Commit: latestCommit, Path: skill.Source.Path}
+	}
+	return result, nil
+}
+
+// InstallAll installs or updates all skills from the manifest (parallel).
 func InstallAll(m *Manifest, lock *LockFile, manifestPath string) []InstallResult {
-	var results []InstallResult
+	type jobResult struct {
+		InstallResult
+		lockUpdate *LockSkill
+		name       string
+	}
 
+	n := len(m.Skills)
+	jobs := make(chan SkillEntry, n)
+	results := make(chan jobResult, n)
+
+	// Worker pool: 4 concurrent goroutines
+	var wg sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for skill := range jobs {
+				r, ls := processOneSkill(skill, lock, m.Directories)
+				results <- jobResult{InstallResult: r, lockUpdate: ls, name: skill.Name}
+			}
+		}()
+	}
+
+	// Send jobs
 	for _, skill := range m.Skills {
-		targetPath := resolveTargetPath(skill.Target, m.Directories)
-		if targetPath == "" {
-			results = append(results, InstallResult{
-				Name:   skill.Name,
-				Action: "failed",
-				Error:  fmt.Sprintf("unknown target %q", skill.Target),
-			})
-			continue
-		}
-		destDir := filepath.Join(targetPath, skill.Name)
-		destDir = expandPath(destDir)
+		jobs <- skill
+	}
+	close(jobs)
 
-		// Check lock for current commit
-		ls, hasLock := lock.Skills[skill.Name]
-		lockedCommit := ""
-		if hasLock {
-			lockedCommit = ls.Commit
-		}
+	// Close results when all workers finish
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
 
-		// Fetch latest commit to compare
-		latestCommit, err := fetchLatestCommit(skill.Source.Repo, skill.Source.Ref)
-		if err != nil {
-			results = append(results, InstallResult{
-				Name:   skill.Name,
-				Action: "failed",
-				Error:  fmt.Sprintf("check commit: %v", err),
-			})
-			continue
+	// Collect results and update lock
+	var allResults []InstallResult
+	for r := range results {
+		if r.lockUpdate != nil {
+			lock.Skills[r.name] = *r.lockUpdate
 		}
-
-		if hasLock && lockedCommit == latestCommit {
-			// Check if SKILL.md actually exists on disk
-			if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil {
-				results = append(results, InstallResult{
-					Name:   skill.Name,
-					Action: "ok",
-					Error:  "already installed",
-				})
-				continue
-			}
-		}
-
-		// Install (or update)
-		result := InstallSkill(skill, destDir, latestCommit)
-		if result.Action == "ok" {
-			// Update lock
-			lock.Skills[skill.Name] = LockSkill{
-				Commit: latestCommit,
-				Path:   skill.Source.Path,
-			}
-		}
-		results = append(results, result)
+		allResults = append(allResults, r.InstallResult)
 	}
 
 	// Write lock
@@ -295,7 +318,7 @@ func InstallAll(m *Manifest, lock *LockFile, manifestPath string) []InstallResul
 		fmt.Fprintf(os.Stderr, "warning: write lock: %v\n", err)
 	}
 
-	return results
+	return allResults
 }
 
 func getLockPath(manifestPath string) string {
