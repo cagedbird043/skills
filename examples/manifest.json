@@ -1,0 +1,63 @@
+{
+  "version": 1,
+
+  "directories": [
+    { "name": "shared",  "path": "~/.agents/skills" },
+    { "name": "codex",   "path": "~/.codex/skills" },
+    { "name": "claude",  "path": "~/.claude/skills" },
+    { "name": "opencode","path": "~/.config/opencode/skills" }
+  ],
+
+  "mirrors": [
+    { "from": "shared",  "to": "claude" },
+    { "from": "shared",  "to": "opencode" }
+  ],
+
+  "skills": [
+    {
+      "name": "anysearch",
+      "target": "shared",
+      "source": {
+        "repo": "cagedbird043/agent-skills",
+        "ref": "main",
+        "path": "skills/anysearch"
+      }
+    },
+    {
+      "name": "docx",
+      "target": "shared",
+      "source": {
+        "repo": "cagedbird043/agent-skills",
+        "ref": "main",
+        "path": "skills/docx"
+      }
+    },
+    {
+      "name": "drawio",
+      "target": "shared",
+      "source": {
+        "repo": "cagedbird043/agent-skills",
+        "ref": "main",
+        "path": "skills/drawio"
+      }
+    },
+    {
+      "name": "ui-ux-pro-max",
+      "target": "codex",
+      "source": {
+        "repo": "cagedbird043/agent-skills",
+        "ref": "main",
+        "path": "skills/ui-ux-pro-max"
+      }
+    },
+    {
+      "name": "troubleshooting",
+      "target": "claude",
+      "source": {
+        "repo": "cagedbird043/agent-skills",
+        "ref": "main",
+        "path": "skills/troubleshooting"
+      }
+    }
+  ]
+}
