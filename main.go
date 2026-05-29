@@ -344,8 +344,9 @@ func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string) {
 			lock.Updated = time.Now().Format(time.RFC3339)
 			writeLock(getLockPath(manifestPath), lock)
 		}
-		// Apply symlinks for single install too
+		// Apply symlinks + mirrors for single install too
 		applySymlinks(m)
+		applyMirrors(m)
 		if r.Action == "ok" {
 			ok("%s", found.Name)
 		} else {
@@ -380,6 +381,7 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string) {
 			writeLock(getLockPath(manifestPath), lock)
 		}
 		applySymlinks(m)
+		applyMirrors(m)
 		if r.Action == "ok" {
 			ok("%s", found.Name)
 		} else {

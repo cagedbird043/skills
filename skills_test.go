@@ -222,9 +222,9 @@ func TestApplySymlinks_CorrectSymlinkSkipped(t *testing.T) {
 	}
 }
 
-// ── applyClaudeMirrors ───────────────────────────────────────────────
+// ── applyMirrors ───────────────────────────────────────────────
 
-func TestApplyClaudeMirrors(t *testing.T) {
+func TestApplyMirrors(t *testing.T) {
 	dir := t.TempDir()
 	sharedDir := filepath.Join(dir, "shared")
 	claudeDir := filepath.Join(dir, "claude")
@@ -241,6 +241,9 @@ func TestApplyClaudeMirrors(t *testing.T) {
 			{Name: "shared", Path: sharedDir},
 			{Name: "claude", Path: claudeDir},
 		},
+		Mirrors: []MirrorEntry{
+			{From: "shared", To: "claude"},
+		},
 		Skills: []SkillEntry{
 			{Name: "drawio", Target: "shared", Source: SourceEntry{Repo: "a/b", Path: "skills/drawio"}},
 			{Name: "docx", Target: "shared", Source: SourceEntry{Repo: "a/b", Path: "skills/docx"}},
@@ -248,7 +251,7 @@ func TestApplyClaudeMirrors(t *testing.T) {
 		},
 	}
 
-	applyClaudeMirrors(m)
+	applyMirrors(m)
 
 	// Verify symlinks
 	for _, name := range []string{"drawio", "docx", "pdf"} {
@@ -264,7 +267,7 @@ func TestApplyClaudeMirrors(t *testing.T) {
 	}
 }
 
-func TestApplyClaudeMirrors_OrphanCleanup(t *testing.T) {
+func TestApplyMirrors_OrphanCleanup(t *testing.T) {
 	dir := t.TempDir()
 	sharedDir := filepath.Join(dir, "shared")
 	claudeDir := filepath.Join(dir, "claude")
@@ -285,10 +288,13 @@ func TestApplyClaudeMirrors_OrphanCleanup(t *testing.T) {
 			{Name: "shared", Path: sharedDir},
 			{Name: "claude", Path: claudeDir},
 		},
+		Mirrors: []MirrorEntry{
+			{From: "shared", To: "claude"},
+		},
 		Skills: []SkillEntry{},
 	}
 
-	applyClaudeMirrors(m)
+	applyMirrors(m)
 
 	// Orphan symlink should be removed
 	if _, err := os.Stat(orphanLink); err == nil {
@@ -296,7 +302,7 @@ func TestApplyClaudeMirrors_OrphanCleanup(t *testing.T) {
 	}
 }
 
-func TestApplyClaudeMirrors_RealFileNotReplaced(t *testing.T) {
+func TestApplyMirrors_RealFileNotReplaced(t *testing.T) {
 	dir := t.TempDir()
 	sharedDir := filepath.Join(dir, "shared")
 	claudeDir := filepath.Join(dir, "claude")
@@ -318,16 +324,54 @@ func TestApplyClaudeMirrors_RealFileNotReplaced(t *testing.T) {
 			{Name: "shared", Path: sharedDir},
 			{Name: "claude", Path: claudeDir},
 		},
+		Mirrors: []MirrorEntry{
+			{From: "shared", To: "claude"},
+		},
 		Skills: []SkillEntry{
 			{Name: "drawio", Target: "shared", Source: SourceEntry{Repo: "a/b", Path: "skills/drawio"}},
 		},
 	}
 
-	applyClaudeMirrors(m)
+	applyMirrors(m)
 
 	// Real file should still exist
 	if _, err := os.Stat(realFile); err != nil {
 		t.Fatal("real file was replaced by symlink!")
+	}
+}
+
+func TestApplyMirrors_ExternalSymlinkNotRemoved(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	claudeDir := filepath.Join(dir, "claude")
+	externalDir := filepath.Join(dir, "external")
+
+	os.MkdirAll(sharedDir, 0755)
+	os.MkdirAll(claudeDir, 0755)
+	os.MkdirAll(externalDir, 0755)
+
+	// Create a claude-only symlink pointing outside the shared pool
+	externalSymlink := filepath.Join(claudeDir, "claude-only")
+	if err := os.Symlink(externalDir, externalSymlink); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Manifest{
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+			{Name: "claude", Path: claudeDir},
+		},
+		Mirrors: []MirrorEntry{
+			{From: "shared", To: "claude"},
+		},
+		Skills: []SkillEntry{},
+	}
+
+	applyMirrors(m)
+
+	// External symlink should survive orphan cleanup
+	if _, err := os.Stat(externalSymlink); err != nil {
+		t.Fatal("external symlink was incorrectly removed by orphan cleanup")
 	}
 }
 

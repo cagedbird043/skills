@@ -455,9 +455,9 @@ func runParallel(m *Manifest, lock *LockFile, manifestPath string, fn func(Skill
 		allResults = append(allResults, r.InstallResult)
 	}
 
-	// Apply manifest symlinks + claude shared skill mirrors
+	// Apply manifest symlinks + mirror shared skills to agent namespaces
 	applySymlinks(m)
-	applyClaudeMirrors(m)
+	applyMirrors(m)
 
 	lock.Updated = time.Now().Format(time.RFC3339)
 	if err := writeLock(getLockPath(manifestPath), lock); err != nil {
@@ -518,70 +518,87 @@ func applySymlinks(m *Manifest) {
 	}
 }
 
-// applyClaudeMirrors creates individual symlinks in the claude directory
-// pointing to shared pool skills. This replaces the old blanket symlink:
-//   ~/.claude/skills → ~/.agents/skills
-// With per-skill symlinks:
-//   ~/.claude/skills/drawio → ~/.agents/skills/drawio
-// This allows claude-exclusive skills to coexist in the same directory.
-func applyClaudeMirrors(m *Manifest) {
-	// Find claude and shared directory paths
-	claudeDir := ""
-	sharedDir := ""
+// applyMirrors reconciles derived symlinks across agent namespaces.
+//
+// For each pair in the manifest's "mirrors" array, it creates individual
+// symlinks in the target namespace directory pointing to each shared skill
+// in the source namespace directory. This allows agent-specific directories
+// (e.g., claude, opencode) to access shared skills without duplicating files.
+//
+// The mirror spec is:
+//   { "from": "shared", "to": "claude" }
+//
+// This creates: ~/.claude/skills/drawio → ~/.agents/skills/drawio
+//
+// Orphan symlinks (in the target dir that no longer correspond to any
+// source skill) are removed. Real files or directories in the target dir
+// that are not managed by the tool are left untouched.
+func applyMirrors(m *Manifest) {
+	// Build a map of directory names to resolved paths
+	dirPaths := make(map[string]string)
 	for _, d := range m.Directories {
-		switch d.Name {
-		case "claude":
-			claudeDir = expandPath(d.Path)
-		case "shared":
-			sharedDir = expandPath(d.Path)
+		dirPaths[d.Name] = expandPath(d.Path)
+	}
+
+	for _, mirror := range m.Mirrors {
+		srcDir := dirPaths[mirror.From]
+		dstDir := dirPaths[mirror.To]
+		if srcDir == "" || dstDir == "" {
+			continue
 		}
-	}
-	if claudeDir == "" || sharedDir == "" {
-		return // no claude directory configured
-	}
 
-	// If claudeDir itself is a symlink (old blanket symlink), remove it
-	if fi, err := os.Lstat(claudeDir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		os.Remove(claudeDir)
-	}
+		// Migration: if dstDir itself is a symlink pointing to srcDir,
+		// it's the old blanket symlink — remove it to make way for real dir
+		if existing, err := os.Readlink(dstDir); err == nil && existing == srcDir {
+			os.Remove(dstDir)
+		}
 
-	// Ensure claude directory exists
-	os.MkdirAll(claudeDir, 0755)
+		// Build set of skills that should be mirrored
+		wanted := make(map[string]bool)
+		for _, s := range m.Skills {
+			if s.Target == mirror.From {
+				wanted[s.Name] = true
 
-	// Build set of shared skills that should have a symlink
-	wanted := make(map[string]bool)
-	for _, s := range m.Skills {
-		if s.Target == "shared" {
-			wanted[s.Name] = true
+				src := filepath.Join(srcDir, s.Name)
+				dst := filepath.Join(dstDir, s.Name)
 
-			src := filepath.Join(sharedDir, s.Name)
-			dst := filepath.Join(claudeDir, s.Name)
+				// Check existing symlink
+				if existing, err := os.Readlink(dst); err == nil && existing == src {
+					continue // already correct
+				}
 
-			// Check existing
-			if existing, err := os.Readlink(dst); err == nil && existing == src {
-				continue // already correct
-			}
+				// Don't replace real files/directories
+				if fi, err := os.Lstat(dst); err == nil && fi.Mode()&os.ModeSymlink == 0 {
+					fmt.Fprintf(os.Stderr, "  ⚠  %s exists and is not a symlink; refusing to replace\n", dst)
+					continue
+				}
+				os.Remove(dst) // remove stale symlink
 
-			// Remove any non-symlink that might be in the way
-			if fi, err := os.Lstat(dst); err == nil && fi.Mode()&os.ModeSymlink == 0 {
-				fmt.Fprintf(os.Stderr, "  ⚠  %s exists and is not a symlink; refusing to replace\n", dst)
-				continue
-			}
-			os.Remove(dst) // remove stale symlink or nothing
+				// Create parent dir if needed
+				os.MkdirAll(filepath.Dir(src), 0755)
+				os.MkdirAll(dstDir, 0755)
 
-			if err := os.Symlink(src, dst); err != nil {
-				fmt.Fprintf(os.Stderr, "  warning: symlink %s -> %s: %v\n", dst, src, err)
+				if err := os.Symlink(src, dst); err != nil {
+					fmt.Fprintf(os.Stderr, "  warning: symlink %s -> %s: %v\n", dst, src, err)
+				}
 			}
 		}
-	}
 
-	// Clean up orphan symlinks in claude directory (symlinks pointing to skills no longer shared)
-	if entries, err := os.ReadDir(claudeDir); err == nil {
-		for _, e := range entries {
-			path := filepath.Join(claudeDir, e.Name())
-			if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		// Remove orphan symlinks that are managed by this mirror
+		// (symlinks pointing into the source directory that are no longer wanted)
+		if entries, err := os.ReadDir(dstDir); err == nil {
+			for _, e := range entries {
+				path := filepath.Join(dstDir, e.Name())
+				fi, err := os.Lstat(path)
+				if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+					continue
+				}
+				target, err := os.Readlink(path)
+				if err != nil || !strings.HasPrefix(target, srcDir) {
+					continue // pointing outside the source pool — not our managed symlink
+				}
 				if !wanted[e.Name()] {
-					os.Remove(path)
+					os.Remove(path) // orphan
 				}
 			}
 		}

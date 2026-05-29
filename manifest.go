@@ -9,10 +9,16 @@ import (
 
 // ── types ────────────────────────────────────────────────────────────
 
+type MirrorEntry struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
 type Manifest struct {
 	Version    int              `json:"version"`
 	Directories []DirEntry      `json:"directories"`
 	Symlinks   []SymlinkEntry   `json:"symlinks,omitempty"`
+	Mirrors    []MirrorEntry    `json:"mirrors,omitempty"`
 	Skills     []SkillEntry     `json:"skills"`
 }
 
