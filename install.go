@@ -379,7 +379,7 @@ func updateOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (InstallR
 		return InstallResult{Name: skill.Name, Action: "failed", Error: msg}, nil
 	}
 
-	if hasLock && lockedCommit == latestCommit {
+	if hasLock && lockedCommit == latestCommit && ls.Path == skill.Source.Path {
 		if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil {
 			return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
 		}
@@ -466,26 +466,28 @@ func applySymlinks(m *Manifest) {
 		from := expandPath(sym.From)
 		to := expandPath(sym.To)
 
-		// Check if symlink already points to the right place
-		if existing, err := os.Readlink(from); err == nil {
-			if existing == to {
+		// Check what currently exists at the target path
+		fi, err := os.Lstat(from)
+		if err == nil {
+			// Something exists
+			if fi.Mode()&os.ModeSymlink != 0 {
+				// It's a symlink — check if it points to the right place
+				if existing, err := os.Readlink(from); err == nil && existing == to {
+					continue
+				}
+				// Wrong symlink — remove and recreate
+				os.Remove(from)
+			} else {
+				// Real file/directory — refuse to replace
+				fmt.Fprintf(os.Stderr, "  ⚠  %s exists and is not a symlink; refusing to replace\n", from)
 				continue
 			}
-			// Wrong symlink — remove and recreate
-			os.Remove(from)
 		} else if !os.IsNotExist(err) {
-			// Lstat error (not "not exist") — can't proceed
+			// Lstat error that is not "not exist"
 			fmt.Fprintf(os.Stderr, "  warning: stat %s: %v\n", from, err)
 			continue
-		} else {
-			// from doesn't exist — good, we'll create it
 		}
-
-		// If from exists and is not a symlink, refuse to replace
-		if fi, err := os.Lstat(from); err == nil && fi.Mode()&os.ModeSymlink == 0 {
-			fmt.Fprintf(os.Stderr, "  ⚠  %s exists and is not a symlink; refusing to replace\n", from)
-			continue
-		}
+		// Path does not exist — proceed to create
 
 		// Ensure parent directory exists
 		if err := os.MkdirAll(filepath.Dir(from), 0755); err != nil {
