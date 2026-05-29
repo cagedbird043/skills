@@ -53,10 +53,14 @@ Create a `.manifest.json`:
 {
   "version": 1,
   "directories": [
-    { "name": "shared", "path": "~/.agents/skills" }
+    { "name": "shared", "path": "~/.agents/skills" },
+    { "name": "codex", "path": "~/.codex/skills" },
+    { "name": "claude", "path": "~/.claude/skills" },
+    { "name": "opencode", "path": "~/.config/opencode/skills" }
   ],
   "mirrors": [
-    { "from": "shared", "to": "claude" }
+    { "from": "shared", "to": "claude" },
+    { "from": "shared", "to": "opencode" }
   ],
   "skills": [
     {
