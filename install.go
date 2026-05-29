@@ -250,6 +250,13 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 		return r
 	}
 
+	// Any failed file? Bail before replace — don't replace a good install with a partial one
+	if failed > 0 {
+		r.Action = "failed"
+		r.Error = fmt.Sprintf("%d files failed, %d ok", failed, files)
+		return r
+	}
+
 	// Verify SKILL.md exists before committing
 	if _, err := os.Stat(filepath.Join(tmpDir, "SKILL.md")); err != nil {
 		r.Action = "failed"
@@ -283,14 +290,7 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 		}
 	}
 	cleanupTmp = false // tmpDir was moved to destDir
-
-	if failed > 0 {
-		r.Action = "failed"
-		r.Error = fmt.Sprintf("%d files failed, %d ok", failed, files)
-	} else {
-		r.Action = "ok"
-	}
-
+	r.Action = "ok"
 	return r
 }
 
@@ -310,11 +310,13 @@ func installOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (Install
 	// Locked and on disk → skip
 	if hasLock {
 		if ls.Commit == "" {
-			// Lock exists but commit is empty — stale lock from older version
-			// Fetch commit to fill it
-			if commit, err := fetchLatestCommit(skill.Source.Repo, skill.Source.Ref); err == nil {
-				return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"},
-					&LockSkill{Commit: commit, Path: skill.Source.Path}
+			// Lock exists but commit is empty — stale lock from older version.
+			// Fetch commit to fill it, but only if SKILL.md is on disk.
+			if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil {
+				if commit, err := fetchLatestCommit(skill.Source.Repo, skill.Source.Ref); err == nil {
+					return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"},
+						&LockSkill{Commit: commit, Path: skill.Source.Path}
+				}
 			}
 		} else if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil {
 			return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
