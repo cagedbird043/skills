@@ -7,8 +7,7 @@ formula_path = sys.argv[1]
 version = sys.argv[2]
 sha_linux = sys.argv[3]
 sha_darwin_arm = sys.argv[4]
-sha_darwin_amd = sys.argv[5]
-sha_completion = sys.argv[6] if len(sys.argv) > 6 else ""
+sha_completion = sys.argv[5] if len(sys.argv) > 5 else ""
 
 with open(formula_path) as f:
     content = f.read()
@@ -19,7 +18,6 @@ content = re.sub(r'version ".*"', f'version "{version}"', content)
 # Update sha256 for binary platforms (sha256 line follows url line)
 platforms = [
     ('skills-darwin-arm64', sha_darwin_arm),
-    ('skills-darwin-amd64', sha_darwin_amd),
     ('skills-linux-amd64', sha_linux),
 ]
 
@@ -37,7 +35,9 @@ for url_suffix, new_sha in platforms:
             new = f'sha256 "{new_sha}"'
             content = content.replace(old_sha, new, 1)
 
-# Update completion resource SHA
+# Update completion resource URL + SHA
+resource_url_pattern = r'(releases/download/)v[^/]+(_skills")'
+content = re.sub(resource_url_pattern, rf'\g<1>v{version}\g<2>', content)
 if sha_completion:
     resource_match = re.search(r'resource "completion"', content)
     if resource_match:

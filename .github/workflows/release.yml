@@ -40,21 +40,8 @@ jobs:
           name: skills-darwin-arm64
           path: skills-darwin-arm64
 
-  build-macos-amd:
-    runs-on: macos-13
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: 'stable'
-      - run: go build -ldflags="-s -w" -o skills-darwin-amd64 .
-      - uses: actions/upload-artifact@v4
-        with:
-          name: skills-darwin-amd64
-          path: skills-darwin-amd64
-
   release:
-    needs: [build-linux, build-macos-arm, build-macos-amd]
+    needs: [build-linux, build-macos-arm]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -78,7 +65,7 @@ jobs:
           generate_release_notes: true
 
   update-homebrew:
-    needs: [build-linux, build-macos-arm, build-macos-amd]
+    needs: [build-linux, build-macos-arm]
     runs-on: ubuntu-latest
     if: github.repository == 'cagedbird043/skills'
     steps:
@@ -100,7 +87,6 @@ jobs:
         run: |
           echo "linux_sha=$(sha256sum skills-linux-amd64 | cut -d' ' -f1)" >> "$GITHUB_ENV"
           echo "darwin_arm_sha=$(sha256sum skills-darwin-arm64 | cut -d' ' -f1)" >> "$GITHUB_ENV"
-          echo "darwin_amd_sha=$(sha256sum skills-darwin-amd64 | cut -d' ' -f1)" >> "$GITHUB_ENV"
           echo "completion_sha=$(sha256sum _skills | cut -d' ' -f1)" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v4
@@ -116,7 +102,6 @@ jobs:
             homebrew-tap/Formula/skills-cli.rb "$VERSION" \
             "${{ env.linux_sha }}" \
             "${{ env.darwin_arm_sha }}" \
-            "${{ env.darwin_amd_sha }}" \
             "${{ env.completion_sha }}"
           cd homebrew-tap
           git add Formula/skills-cli.rb
