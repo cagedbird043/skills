@@ -634,6 +634,53 @@ func TestInstallOneSkill_NoFilesFoundFails(t *testing.T) {
 	}
 }
 
+// fakeGitHubRoot returns a fake GitHub that has root-level files
+// (paths without a directory prefix), used to test root source paths.
+func fakeGitHubRoot() {
+	fetchLatestCommitFn = func(_, _ string) (string, error) {
+		return "fakecommit1234567890123456789012345678901234", nil
+	}
+	fetchTreeFn = func(_, _ string) (tree []treeEntry, err error) {
+		return []treeEntry{
+			{Path: "SKILL.md", Mode: "100644", Type: "blob"},
+			{Path: "README.md", Mode: "100644", Type: "blob"},
+			{Path: "scripts/anysearch_cli.sh", Mode: "100755", Type: "blob"},
+		}, nil
+	}
+	downloadFileFn = func(_, _, filePath string) ([]byte, error) {
+		name := filepath.Base(filePath)
+		return []byte("# " + name), nil
+	}
+}
+
+func TestInstallSkill_RootPathWithDot_Succeeds(t *testing.T) {
+	fakeGitHubRoot()
+	defer restoreGitHub()
+
+	result := InstallSkill(
+		SkillEntry{Name: "anysearch", Source: SourceEntry{Repo: "anysearch-ai/anysearch-skill", Ref: "main", Path: "."}},
+		t.TempDir(), "",
+	)
+
+	if result.Action != "ok" {
+		t.Fatalf("expected success for root path '.', got %+v", result)
+	}
+}
+
+func TestInstallSkill_RootPathWithEmptyString_Succeeds(t *testing.T) {
+	fakeGitHubRoot()
+	defer restoreGitHub()
+
+	result := InstallSkill(
+		SkillEntry{Name: "anysearch", Source: SourceEntry{Repo: "anysearch-ai/anysearch-skill", Ref: "main", Path: ""}},
+		t.TempDir(), "",
+	)
+
+	if result.Action != "ok" {
+		t.Fatalf("expected success for empty root path, got %+v", result)
+	}
+}
+
 // ── cmdUpdate integration ─────────────────────────────────────────
 
 func TestCmdUpdate_OutdatedDetectedAndInstalled(t *testing.T) {
