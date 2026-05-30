@@ -56,6 +56,7 @@ func usage() {
   list              List all skills with installation status
   install [name]    Install from lock (no remote check — fast)
   update            Check remote commits, update changed skills
+  remove <name>     Remove a skill from manifest, lock, disk, and mirrors
   verify            Check that all skill directories exist
   info <name>       Show details about a specific skill
   completion <shell> Generate shell completion (zsh, bash)
@@ -63,6 +64,8 @@ func usage() {
 %s:
   -m, --manifest <path>  Path to manifest file
   -q, --quiet            Suppress normal output, show errors only
+  -n, --dry-run          Show what would be done without doing it
+  -k, --keep-manifest    With remove: keep the manifest entry
       --version          Print version
 
 %s:
@@ -74,6 +77,9 @@ func usage() {
   skills install
   skills install drawio
   skills update
+  skills remove drawio
+  skills remove drawio --keep-manifest
+  skills remove drawio --dry-run
   skills verify
   skills info drawio
   skills completion zsh > ~/.local/share/zsh/site-functions/_skills
@@ -113,6 +119,8 @@ func findManifest(flagPath string) string {
 func main() {
 	manifestPath := ""
 	var positional []string
+	dryRun := false
+	keepManifest := false
 
 	for i := 1; i < len(os.Args); i++ {
 		arg := os.Args[i]
@@ -137,6 +145,14 @@ func main() {
 		if arg == "--help" || arg == "-h" {
 			usage()
 			return
+		}
+		if arg == "-n" || arg == "--dry-run" {
+			dryRun = true
+			continue
+		}
+		if arg == "-k" || arg == "--keep-manifest" {
+			keepManifest = true
+			continue
 		}
 		positional = append(positional, arg)
 	}
@@ -193,7 +209,13 @@ func main() {
 		if len(positional) > 1 {
 			target = positional[1]
 		}
-		cmdUpdate(m, lock, manifestPath, target)
+		cmdUpdate(m, lock, manifestPath, target, dryRun)
+	case "remove":
+		if len(positional) < 2 {
+			fmt.Fprintln(os.Stderr, "skills: remove requires a skill name")
+			os.Exit(1)
+		}
+		cmdRemove(m, lock, manifestPath, positional[1], keepManifest, dryRun)
 	case "verify":
 		cmdVerify(m)
 	case "info":
@@ -360,7 +382,7 @@ func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string) {
 }
 
 // cmdUpdate checks remote commits — makes API calls.
-func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string) {
+func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun bool) {
 	if target != "" {
 		var found *SkillEntry
 		for _, s := range m.Skills {
@@ -392,6 +414,100 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string) {
 
 	results := UpdateAll(m, lock, manifestPath)
 	printSummary(results)
+}
+
+// cmdRemove removes a skill from lock, manifest, disk, and mirror symlinks.
+// Execution order: lock → manifest → disk → applyMirrors (resilient to partial failure).
+func cmdRemove(m *Manifest, lock *LockFile, manifestPath, name string, keepManifest, dryRun bool) {
+	if err := validateSkillName(name); err != nil {
+		fail("%v", err)
+		os.Exit(1)
+	}
+
+	// Capture skill info before any modifications
+	var skillInfo *SkillEntry
+	for _, s := range m.Skills {
+		if s.Name == name {
+			skillInfo = &s
+			break
+		}
+	}
+	_, inLock := lock.Skills[name]
+
+	if skillInfo == nil && !inLock {
+		fail("skill %q not found in manifest or lock", name)
+		os.Exit(1)
+	}
+
+	// Show what we'd do
+	if !quiet {
+		fmt.Printf("  %s %s:\n", bold("remove"), name)
+		if skillInfo != nil {
+			if keepManifest {
+				fmt.Printf("    manifest: %s (keep entry)\n", yellow("keep"))
+			} else {
+				fmt.Printf("    manifest: remove entry\n")
+			}
+		}
+		if inLock {
+			fmt.Printf("    lock: remove entry\n")
+		}
+		// Check disk
+		for _, d := range m.Directories {
+			dirPath := expandPath(d.Path)
+			if _, err := os.Stat(filepath.Join(dirPath, name, "SKILL.md")); err == nil {
+				fmt.Printf("    disk: remove %s/%s\n", d.Name, name)
+			}
+		}
+		fmt.Printf("    mirrors: cleanup symlinks\n")
+	}
+
+	if dryRun {
+		return
+	}
+
+	// 1. Lock — always try to remove
+	if inLock {
+		delete(lock.Skills, name)
+		lock.Updated = time.Now().Format(time.RFC3339)
+		if err := writeLock(getLockPath(manifestPath), lock); err != nil {
+			warn("lock write: %v", err)
+		} else {
+			ok("lock: removed entry")
+		}
+	}
+
+	// 2. Manifest — remove unless --keep-manifest
+	if skillInfo != nil && !keepManifest {
+		newSkills := make([]SkillEntry, 0, len(m.Skills)-1)
+		for _, s := range m.Skills {
+			if s.Name != name {
+				newSkills = append(newSkills, s)
+			}
+		}
+		m.Skills = newSkills
+		if err := writeManifest(manifestPath, m); err != nil {
+			warn("manifest write: %v", err)
+		} else {
+			ok("manifest: removed entry")
+		}
+	}
+
+	// 3. Disk — remove skill directory from all configured directories
+	for _, d := range m.Directories {
+		dirPath := expandPath(d.Path)
+		skillDir := filepath.Join(dirPath, name)
+		if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err == nil {
+			if err := os.RemoveAll(skillDir); err != nil {
+				warn("disk: %s: %v", skillDir, err)
+			} else {
+				ok("disk: removed %s/%s", d.Name, name)
+			}
+		}
+	}
+
+	// 4. Mirrors — applyMirrors cleans up orphan symlinks
+	applyMirrors(m)
 }
 
 func cmdVerify(m *Manifest) {
