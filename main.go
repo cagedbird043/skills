@@ -405,7 +405,7 @@ func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string) {
 
 type auditItem struct {
 	Name   string
-	Status string // ok | missing | uninstalled | stale | stale-lock | orphan | path-changed
+	Status string // ok | missing | uninstalled | stale | orphan | path-changed | degraded | outdated
 	Detail string
 }
 
@@ -538,18 +538,23 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 
 	if !quiet {
 		fmt.Println(bold("Plan:"))
-		needsAction := 0
+		needsUpdate := 0
+		nDegraded := 0
+		nStale := 0
 		for _, item := range items {
 			var statusColor string
 			switch item.Status {
 			case "ok":
 				statusColor = green("ok")
-			case "missing", "uninstalled", "path-changed", "stale-disk", "outdated", "degraded":
+			case "missing", "uninstalled", "path-changed", "stale-disk", "outdated":
 				statusColor = yellow(item.Status)
-				needsAction++
-			case "stale", "stale-lock", "orphan":
+				needsUpdate++
+			case "degraded":
+				statusColor = yellow("degraded")
+				nDegraded++
+			case "stale", "orphan":
 				statusColor = red(item.Status)
-				needsAction++
+				nStale++
 			default:
 				statusColor = item.Status
 			}
@@ -560,8 +565,18 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 			}
 		}
 		fmt.Println()
-		summary := fmt.Sprintf("%d total, %d need action", len(items), needsAction)
-		if needsAction > 0 {
+		parts := []string{fmt.Sprintf("%d total", len(items))}
+		if needsUpdate > 0 {
+			parts = append(parts, fmt.Sprintf("%d to update", needsUpdate))
+		}
+		if nDegraded > 0 {
+			parts = append(parts, fmt.Sprintf("%d unreachable", nDegraded))
+		}
+		if nStale > 0 {
+			parts = append(parts, fmt.Sprintf("%d to clean up", nStale))
+		}
+		summary := strings.Join(parts, ", ")
+		if needsUpdate > 0 || nDegraded > 0 || nStale > 0 {
 			fmt.Println("  " + yellow(summary))
 		} else {
 			fmt.Println("  " + green(summary))
@@ -641,7 +656,7 @@ func sortItems(items []auditItem) {
 	// Non-ok first, then alphabetical
 	statusOrder := map[string]int{
 		"outdated": 0, "degraded": 1, "missing": 2, "uninstalled": 3, "path-changed": 4, "stale-disk": 5,
-		"stale": 6, "stale-lock": 7, "orphan": 8, "ok": 9,
+		"stale": 6, "orphan": 7, "ok": 8,
 	}
 	for i := 0; i < len(items); i++ {
 		for j := i + 1; j < len(items); j++ {

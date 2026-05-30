@@ -634,6 +634,140 @@ func TestInstallOneSkill_NoFilesFoundFails(t *testing.T) {
 	}
 }
 
+// ── cmdUpdate integration ─────────────────────────────────────────
+
+func TestCmdUpdate_OutdatedDetectedAndInstalled(t *testing.T) {
+	fakeGitHub()
+	defer restoreGitHub()
+
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+
+	// Create disk state: SKILL.md exists
+	skillDir := filepath.Join(sharedDir, "test")
+	os.MkdirAll(skillDir, 0755)
+	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# test (old)")
+
+	// Write manifest
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{
+			{
+				Name:   "test",
+				Target: "shared",
+				Source: SourceEntry{Repo: "fake/repo", Ref: "main", Path: "skills/test"},
+			},
+		},
+	})
+
+	// Write lock with OLD commit — fakeGitHub returns "fakecommit123..."
+	lockPath := getLockPath(manifestPath)
+	writeJSON(t, lockPath, LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"test": {Commit: "oldcommit1234567890123456789012345678901234", Path: "skills/test"},
+		},
+	})
+
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Run cmdUpdate: yes=true (skip confirm), dryRun=false
+	oldQuiet := quiet
+	quiet = true
+	cmdUpdate(m, lock, manifestPath, "", false, true)
+	quiet = oldQuiet
+
+	// Lock should be updated with fake commit
+	lock2, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ls, ok := lock2.Skills["test"]
+	if !ok {
+		t.Fatal("test skill missing from lock after update")
+	}
+	if ls.Commit != "fakecommit1234567890123456789012345678901234" {
+		t.Fatalf("expected fake commit, got %q", ls.Commit)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err != nil {
+		t.Fatal("SKILL.md missing after update")
+	}
+}
+
+func TestCmdUpdate_DryRunDoesNotModify(t *testing.T) {
+	fakeGitHub()
+	defer restoreGitHub()
+
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+
+	skillDir := filepath.Join(sharedDir, "test")
+	os.MkdirAll(skillDir, 0755)
+	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# test (old)")
+
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{
+			{
+				Name:   "test",
+				Target: "shared",
+				Source: SourceEntry{Repo: "fake/repo", Ref: "main", Path: "skills/test"},
+			},
+		},
+	})
+
+	lockPath := getLockPath(manifestPath)
+	writeJSON(t, lockPath, LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"test": {Commit: "oldcommit1234567890123456789012345678901234", Path: "skills/test"},
+		},
+	})
+
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Dry run
+	oldQuiet := quiet
+	quiet = true
+	cmdUpdate(m, lock, manifestPath, "", true, true)
+	quiet = oldQuiet
+
+	// Lock should still have OLD commit
+	lock2, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ls, ok := lock2.Skills["test"]
+	if !ok {
+		t.Fatal("test skill missing from lock after dry-run")
+	}
+	if ls.Commit != "oldcommit1234567890123456789012345678901234" {
+		t.Fatalf("dry-run should not modify lock, got commit %q", ls.Commit)
+	}
+}
+
 func TestIsRateLimit(t *testing.T) {
 	if !isRateLimit(fmt.Errorf("HTTP 403")) {
 		t.Fatal("should detect 403")

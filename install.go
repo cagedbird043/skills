@@ -478,11 +478,6 @@ func InstallAll(m *Manifest, lock *LockFile, manifestPath string) []InstallResul
 	return runParallel(m, lock, manifestPath, installOneSkill)
 }
 
-// UpdateAll checks remote commits and updates skills that have changed.
-func UpdateAll(m *Manifest, lock *LockFile, manifestPath string) []InstallResult {
-	return runParallel(m, lock, manifestPath, updateOneSkill)
-}
-
 // applySymlinks creates all symlinks declared in the manifest.
 func applySymlinks(m *Manifest) {
 	for _, sym := range m.Symlinks {
