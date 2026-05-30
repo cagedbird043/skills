@@ -1349,35 +1349,6 @@ func TestCmdInfo_ShowsDetails(t *testing.T) {
 
 // ── cmdVerify deprecated ─────────────────────────────────────────────
 
-func TestCmdVerify_Deprecated(t *testing.T) {
-	dir := t.TempDir()
-	sharedDir := filepath.Join(dir, "shared")
-	manifestPath := filepath.Join(dir, ".manifest.json")
-
-	os.MkdirAll(filepath.Join(sharedDir, "test"), 0755)
-	writeFile(t, filepath.Join(sharedDir, "test", "SKILL.md"), "# test")
-
-	writeJSON(t, manifestPath, Manifest{
-		Version: 1,
-		Directories: []DirEntry{
-			{Name: "shared", Path: sharedDir},
-		},
-		Skills: []SkillEntry{
-			{
-				Name: "test", Target: "shared",
-				Source: SourceEntry{Repo: "a/b", Ref: "main", Path: "skills/test"},
-			},
-		},
-	})
-	m, _ := readManifest(manifestPath)
-
-	oldQ := quiet
-	quiet = true
-	cmdVerify(m)
-	quiet = oldQ
-	// No panic = test passes
-}
-
 // ── applySymlinks ────────────────────────────────────────────────────
 
 func TestApplySymlinks_CreateNew(t *testing.T) {

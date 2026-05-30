@@ -57,7 +57,6 @@ func usage() {
   install [name]    Install from lock (no remote check — fast)
   update            Check remote commits, update changed skills
   remove <name>     Remove a skill from manifest, lock, disk, and mirrors
-  verify            (deprecated) Use 'skills update --dry-run' instead
   info <name>       Show details about a specific skill
   completion <shell> Generate shell completion (zsh, bash)
 
@@ -80,7 +79,6 @@ func usage() {
   skills remove drawio
   skills remove drawio --keep-manifest
   skills remove drawio --dry-run
-  skills verify
   skills info drawio
   skills completion zsh > ~/.local/share/zsh/site-functions/_skills
 `, bold("skills"), version,
@@ -221,8 +219,6 @@ func main() {
 			os.Exit(1)
 		}
 		cmdRemove(m, lock, manifestPath, positional[1], keepManifest, dryRun)
-	case "verify":
-		cmdVerify(m)
 	case "info":
 		if len(positional) < 2 {
 			fmt.Fprintln(os.Stderr, "skills: info requires a skill name")
@@ -266,7 +262,6 @@ _skills() {
     'install:install from lock (fast, no remote check)'
     'update:audit and update skills'
     'remove:remove a skill from manifest and disk'
-    'verify:(deprecated) use skills update --dry-run'
     'info:show skill details'
     'completion:generate shell completion'
   )
@@ -291,7 +286,7 @@ _skills "$@"
 		fmt.Print(`_skills() {
   local cur prev words cword
   _init_completion || return
-  COMPREPLY=($(compgen -W "list install update remove verify info completion" -- "$cur"))
+  COMPREPLY=($(compgen -W "list install update remove info completion" -- "$cur"))
 }
 complete -F _skills skills
 `)
@@ -769,36 +764,6 @@ func cmdRemove(m *Manifest, lock *LockFile, manifestPath, name string, keepManif
 
 	// 4. Mirrors — applyMirrors cleans up orphan symlinks
 	applyMirrors(m)
-}
-
-func cmdVerify(m *Manifest) {
-	if !quiet {
-		fmt.Fprintf(os.Stderr, "  %s 'skills verify' is deprecated. Use 'skills update --dry-run' instead.\n", yellow("⚠"))
-	}
-	bad := 0
-	for _, s := range m.Skills {
-		targetPath := resolveTargetPath(s.Target, m.Directories)
-		if targetPath == "" {
-			fail("%s: unknown target %q", s.Name, s.Target)
-			bad++
-			continue
-		}
-		skillDir := filepath.Join(expandPath(targetPath), s.Name)
-		sm := filepath.Join(skillDir, "SKILL.md")
-		if _, err := os.Stat(sm); err == nil {
-			ok("%s", s.Name)
-		} else {
-			fail("%s: not found at %s", s.Name, sm)
-			bad++
-		}
-	}
-	if !quiet {
-		if bad > 0 {
-			fmt.Println("\n  " + yellow(fmt.Sprintf("%d skill(s) missing", bad)))
-		} else {
-			fmt.Println("\n  " + green("All skills present."))
-		}
-	}
 }
 
 func cmdInfo(m *Manifest, lock *LockFile, name string) {
