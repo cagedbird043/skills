@@ -782,3 +782,672 @@ func TestIsRateLimit(t *testing.T) {
 		t.Fatal("nil should not be rate limit")
 	}
 }
+
+// ── validateSkillName ────────────────────────────────────────────────
+
+func TestValidateSkillName(t *testing.T) {
+	tests := []struct {
+		name  string
+		valid bool
+	}{
+		{"", false},
+		{".", false},
+		{"..", false},
+		{"foo/bar", false},
+		{"foo\\bar", false},
+		{"a\x00b", false},
+		{"normal-name", true},
+		{"very_long.name_with-dots", true},
+		{"a", true},
+	}
+	for _, tc := range tests {
+		err := validateSkillName(tc.name)
+		if tc.valid && err != nil {
+			t.Errorf("validateSkillName(%q) = %v, want nil", tc.name, err)
+		}
+		if !tc.valid && err == nil {
+			t.Errorf("validateSkillName(%q) = nil, want error", tc.name)
+		}
+	}
+}
+
+// ── writeManifest ────────────────────────────────────────────────────
+
+func TestWriteManifestRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	mf := filepath.Join(dir, ".manifest.json")
+
+	m := &Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: "~/.agents/skills", Comment: "main pool"},
+			{Name: "codex", Path: "~/.codex/skills"},
+		},
+		Symlinks: []SymlinkEntry{
+			{From: "~/.codex/skills", To: "~/.agents/skills"},
+		},
+		Mirrors: []MirrorEntry{
+			{From: "shared", To: "claude"},
+		},
+		Skills: []SkillEntry{
+			{
+				Name: "drawio", Target: "shared",
+				Source: SourceEntry{Repo: "a/b", Ref: "main", Path: "skills/drawio"},
+				Note: "test skill",
+			},
+		},
+	}
+
+	if err := writeManifest(mf, m); err != nil {
+		t.Fatal(err)
+	}
+
+	m2, err := readManifest(mf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m2.Skills) != 1 || m2.Skills[0].Name != "drawio" {
+		t.Fatalf("unexpected skills: %+v", m2.Skills)
+	}
+	if len(m2.Mirrors) != 1 || m2.Mirrors[0].From != "shared" {
+		t.Fatalf("mirrors lost: %+v", m2.Mirrors)
+	}
+	if len(m2.Symlinks) != 1 || m2.Symlinks[0].From != "~/.codex/skills" {
+		t.Fatalf("symlinks lost: %+v", m2.Symlinks)
+	}
+}
+
+// ── cmdRemove ────────────────────────────────────────────────────────
+
+func setupRemoveTest(t *testing.T) (string, *Manifest, *LockFile) {
+	t.Helper()
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	claudeDir := filepath.Join(dir, "claude")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+
+	// Create shared skill
+	skillDir := filepath.Join(sharedDir, "test-skill")
+	os.MkdirAll(skillDir, 0755)
+	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# test-skill")
+
+	// Create mirror symlink
+	os.MkdirAll(claudeDir, 0755)
+	if err := os.Symlink(skillDir, filepath.Join(claudeDir, "test-skill")); err != nil {
+		t.Fatal(err)
+	}
+
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+			{Name: "claude", Path: claudeDir},
+		},
+		Mirrors: []MirrorEntry{
+			{From: "shared", To: "claude"},
+		},
+		Skills: []SkillEntry{
+			{
+				Name: "test-skill", Target: "shared",
+				Source: SourceEntry{Repo: "a/b", Ref: "main", Path: "skills/test"},
+			},
+		},
+	})
+
+	lockPath := getLockPath(manifestPath)
+	writeJSON(t, lockPath, LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"test-skill": {Commit: "abc123", Path: "skills/test"},
+		},
+	})
+
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manifestPath, m, lock
+}
+
+func TestCmdRemove_RemovesFromAllLayers(t *testing.T) {
+	manifestPath, m, lock := setupRemoveTest(t)
+	oldQ := quiet
+	quiet = true
+	cmdRemove(m, lock, manifestPath, "test-skill", false, false)
+	quiet = oldQ
+
+	// Manifest should not have test-skill
+	for _, s := range m.Skills {
+		if s.Name == "test-skill" {
+			t.Fatal("manifest still has test-skill")
+		}
+	}
+	// Lock should not have test-skill
+	if _, ok := lock.Skills["test-skill"]; ok {
+		t.Fatal("lock still has test-skill")
+	}
+	// Disk should be gone
+	if _, err := os.Stat(filepath.Join(filepath.Dir(manifestPath), "shared", "test-skill", "SKILL.md")); err == nil {
+		t.Fatal("disk skill directory still exists")
+	}
+	// Mirror symlink should be gone
+	claudeDir := filepath.Join(filepath.Dir(manifestPath), "claude")
+	if _, err := os.Lstat(filepath.Join(claudeDir, "test-skill")); err == nil {
+		t.Fatal("mirror symlink still exists")
+	}
+}
+
+func TestCmdRemove_KeepManifest(t *testing.T) {
+	manifestPath, m, lock := setupRemoveTest(t)
+	oldQ := quiet
+	quiet = true
+	cmdRemove(m, lock, manifestPath, "test-skill", true, false)
+	quiet = oldQ
+
+	// Manifest should still have test-skill
+	found := false
+	for _, s := range m.Skills {
+		if s.Name == "test-skill" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("manifest should still have test-skill (keep-manifest)")
+	}
+	// Lock should not have test-skill
+	if _, ok := lock.Skills["test-skill"]; ok {
+		t.Fatal("lock still has test-skill")
+	}
+	// Disk should be gone
+	sharedDir := filepath.Join(filepath.Dir(manifestPath), "shared")
+	if _, err := os.Stat(filepath.Join(sharedDir, "test-skill", "SKILL.md")); err == nil {
+		t.Fatal("disk skill directory still exists")
+	}
+}
+
+func TestCmdRemove_DryRun(t *testing.T) {
+	manifestPath, m, lock := setupRemoveTest(t)
+	oldQ := quiet
+	quiet = true
+	cmdRemove(m, lock, manifestPath, "test-skill", false, true)
+	quiet = oldQ
+
+	// Nothing should be modified
+	found := false
+	for _, s := range m.Skills {
+		if s.Name == "test-skill" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("dry-run should not modify manifest")
+	}
+	if _, ok := lock.Skills["test-skill"]; !ok {
+		t.Fatal("dry-run should not modify lock")
+	}
+	sharedDir := filepath.Join(filepath.Dir(manifestPath), "shared")
+	if _, err := os.Stat(filepath.Join(sharedDir, "test-skill", "SKILL.md")); err != nil {
+		t.Fatal("dry-run should not delete disk")
+	}
+}
+
+// ── cmdUpdate state coverage ─────────────────────────────────────────
+
+func TestCmdUpdate_UninstalledDetectedAndInstalled(t *testing.T) {
+	fakeGitHub()
+	defer restoreGitHub()
+
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{
+			{
+				Name: "test", Target: "shared",
+				Source: SourceEntry{Repo: "fake/repo", Ref: "main", Path: "skills/test"},
+			},
+		},
+	})
+	lockPath := getLockPath(manifestPath)
+	writeJSON(t, lockPath, LockFile{Version: 1, Skills: map[string]LockSkill{}})
+
+	m, _ := readManifest(manifestPath)
+	lock, _ := readLock(lockPath)
+
+	oldQ := quiet
+	quiet = true
+	cmdUpdate(m, lock, manifestPath, "", false, true)
+	quiet = oldQ
+
+	lock2, _ := readLock(lockPath)
+	if _, ok := lock2.Skills["test"]; !ok {
+		t.Fatal("uninstalled skill should be installed by update")
+	}
+	if _, err := os.Stat(filepath.Join(sharedDir, "test", "SKILL.md")); err != nil {
+		t.Fatal("SKILL.md missing after install")
+	}
+}
+
+func TestCmdUpdate_Degraded(t *testing.T) {
+	fetchLatestCommitFn = func(_, _ string) (string, error) {
+		return "", fmt.Errorf("network error")
+	}
+	defer restoreGitHub()
+
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+
+	skillDir := filepath.Join(sharedDir, "test")
+	os.MkdirAll(skillDir, 0755)
+	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# test")
+
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{
+			{
+				Name: "test", Target: "shared",
+				Source: SourceEntry{Repo: "fake/repo", Ref: "main", Path: "skills/test"},
+			},
+		},
+	})
+	lockPath := getLockPath(manifestPath)
+	writeJSON(t, lockPath, LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"test": {Commit: "abc123", Path: "skills/test"},
+		},
+	})
+
+	m, _ := readManifest(manifestPath)
+	lock, _ := readLock(lockPath)
+
+	oldQ := quiet
+	quiet = true
+	cmdUpdate(m, lock, manifestPath, "", false, true)
+	quiet = oldQ
+
+	// Lock should NOT have changed (degraded)
+	lock2, _ := readLock(lockPath)
+	if lock2.Skills["test"].Commit != "abc123" {
+		t.Fatal("degraded should not modify lock")
+	}
+}
+
+func TestCmdUpdate_StaleLockCleaned(t *testing.T) {
+	fakeGitHub()
+	defer restoreGitHub()
+
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{}, // empty
+	})
+	lockPath := getLockPath(manifestPath)
+	writeJSON(t, lockPath, LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"stale-skill": {Commit: "abc123", Path: "skills/stale"},
+		},
+	})
+
+	m, _ := readManifest(manifestPath)
+	lock, _ := readLock(lockPath)
+
+	oldQ := quiet
+	quiet = true
+	cmdUpdate(m, lock, manifestPath, "", false, true)
+	quiet = oldQ
+
+	lock2, _ := readLock(lockPath)
+	if _, ok := lock2.Skills["stale-skill"]; ok {
+		t.Fatal("stale lock entry was not cleaned")
+	}
+}
+
+func TestCmdUpdate_StaleDisk(t *testing.T) {
+	fakeGitHub()
+	defer restoreGitHub()
+
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+
+	// Create disk skill with SKILL.md
+	os.MkdirAll(filepath.Join(sharedDir, "test"), 0755)
+	writeFile(t, filepath.Join(sharedDir, "test", "SKILL.md"), "# test")
+
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{
+			{
+				Name: "test", Target: "shared",
+				Source: SourceEntry{Repo: "fake/repo", Ref: "main", Path: "skills/test"},
+			},
+		},
+	})
+	// Lock exists but empty — stale-disk
+	lockPath := getLockPath(manifestPath)
+	writeJSON(t, lockPath, LockFile{Version: 1, Skills: map[string]LockSkill{}})
+
+	m, _ := readManifest(manifestPath)
+	lock, _ := readLock(lockPath)
+
+	// Should be detectable (no error, just dry-run to see the state)
+	oldQ := quiet
+	quiet = true
+	cmdUpdate(m, lock, manifestPath, "", true, true)
+	quiet = oldQ
+	// No crash = test passes; stale-disk should not cause panic
+}
+
+func TestCmdUpdate_OrphanDetected(t *testing.T) {
+	fakeGitHub()
+	defer restoreGitHub()
+
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+
+	// Create orphan skill directory with SKILL.md
+	os.MkdirAll(filepath.Join(sharedDir, "orphan-skill"), 0755)
+	writeFile(t, filepath.Join(sharedDir, "orphan-skill", "SKILL.md"), "# orphan")
+
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{},
+	})
+	lockPath := getLockPath(manifestPath)
+	writeJSON(t, lockPath, LockFile{Version: 1, Skills: map[string]LockSkill{}})
+
+	m, _ := readManifest(manifestPath)
+	lock, _ := readLock(lockPath)
+
+	oldQ := quiet
+	quiet = true
+	cmdUpdate(m, lock, manifestPath, "", true, true)
+	quiet = oldQ
+
+	// Orphan should NOT be auto-deleted
+	if _, err := os.Stat(filepath.Join(sharedDir, "orphan-skill", "SKILL.md")); err != nil {
+		t.Fatal("orphan was incorrectly deleted by dry-run")
+	}
+}
+
+// ── cmdInstall bulk ──────────────────────────────────────────────────
+
+func TestCmdInstall_BulkWithMultipleSkills(t *testing.T) {
+	fakeGitHub()
+	defer restoreGitHub()
+
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+
+	// One skill already installed + locked
+	os.MkdirAll(filepath.Join(sharedDir, "existing"), 0755)
+	writeFile(t, filepath.Join(sharedDir, "existing", "SKILL.md"), "# existing")
+
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{
+			{
+				Name: "existing", Target: "shared",
+				Source: SourceEntry{Repo: "fake/repo", Ref: "main", Path: "skills/test"},
+			},
+			{
+				Name: "new", Target: "shared",
+				Source: SourceEntry{Repo: "fake/repo", Ref: "main", Path: "skills/new-path"},
+			},
+		},
+	})
+	lockPath := getLockPath(manifestPath)
+	writeJSON(t, lockPath, LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"existing": {Commit: "fakecommit1234567890123456789012345678901234", Path: "skills/test"},
+		},
+	})
+
+	m, _ := readManifest(manifestPath)
+	lock, _ := readLock(lockPath)
+
+	oldQ := quiet
+	quiet = true
+	cmdInstall(m, lock, manifestPath, "")
+	quiet = oldQ
+
+	// Both should be on disk
+	if _, err := os.Stat(filepath.Join(sharedDir, "existing", "SKILL.md")); err != nil {
+		t.Fatal("existing skill removed")
+	}
+	if _, err := os.Stat(filepath.Join(sharedDir, "new", "SKILL.md")); err != nil {
+		t.Fatal("new skill not installed")
+	}
+	// Lock should have both
+	lock2, _ := readLock(lockPath)
+	if _, ok := lock2.Skills["existing"]; !ok {
+		t.Fatal("existing not in lock")
+	}
+	if _, ok := lock2.Skills["new"]; !ok {
+		t.Fatal("new not in lock")
+	}
+}
+
+// ── cmdInfo ──────────────────────────────────────────────────────────
+
+func TestCmdInfo_ShowsDetails(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{
+			{
+				Name: "test", Target: "shared",
+				Source: SourceEntry{Repo: "user/repo", Ref: "main", Path: "skills/test"},
+			},
+		},
+	})
+	lockPath := getLockPath(manifestPath)
+	writeJSON(t, lockPath, LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"test": {Commit: "deadbeef1234567890123456789012345678901234", Path: "skills/test"},
+		},
+	})
+
+	m, _ := readManifest(manifestPath)
+	lock, _ := readLock(lockPath)
+
+	oldQ := quiet
+	quiet = true
+	cmdInfo(m, lock, "test")
+	quiet = oldQ
+	// No panic = test passes
+}
+
+// ── cmdVerify deprecated ─────────────────────────────────────────────
+
+func TestCmdVerify_Deprecated(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+
+	os.MkdirAll(filepath.Join(sharedDir, "test"), 0755)
+	writeFile(t, filepath.Join(sharedDir, "test", "SKILL.md"), "# test")
+
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{
+			{
+				Name: "test", Target: "shared",
+				Source: SourceEntry{Repo: "a/b", Ref: "main", Path: "skills/test"},
+			},
+		},
+	})
+	m, _ := readManifest(manifestPath)
+
+	oldQ := quiet
+	quiet = true
+	cmdVerify(m)
+	quiet = oldQ
+	// No panic = test passes
+}
+
+// ── applySymlinks ────────────────────────────────────────────────────
+
+func TestApplySymlinks_CreateNew(t *testing.T) {
+	dir := t.TempDir()
+	from := filepath.Join(dir, "target")
+	to := filepath.Join(dir, "source")
+
+	os.MkdirAll(to, 0755)
+
+	m := &Manifest{
+		Symlinks: []SymlinkEntry{
+			{From: from, To: to},
+		},
+	}
+	applySymlinks(m)
+
+	existing, err := os.Readlink(from)
+	if err != nil {
+		t.Fatalf("symlink not created: %v", err)
+	}
+	if existing != to {
+		t.Fatalf("expected %q, got %q", to, existing)
+	}
+}
+
+// ── applyMirrors ─────────────────────────────────────────────────────
+
+func TestApplyMirrors_MigrationFromBlanketSymlink(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	claudeDir := filepath.Join(dir, "claude")
+
+	// Old blanket symlink: claude → shared
+	os.MkdirAll(sharedDir, 0755)
+	if err := os.Symlink(sharedDir, claudeDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a shared skill
+	skillDir := filepath.Join(sharedDir, "drawio")
+	os.MkdirAll(skillDir, 0755)
+	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# drawio")
+
+	m := &Manifest{
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+			{Name: "claude", Path: claudeDir},
+		},
+		Mirrors: []MirrorEntry{
+			{From: "shared", To: "claude"},
+		},
+		Skills: []SkillEntry{
+			{Name: "drawio", Target: "shared", Source: SourceEntry{Repo: "a/b", Path: "skills/drawio"}},
+		},
+	}
+
+	applyMirrors(m)
+
+	// claude dir should now be a real directory (not a symlink)
+	fi, err := os.Lstat(claudeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("blanket symlink was not replaced with a real directory")
+	}
+	// Mirror symlink should exist inside claude dir
+	dst := filepath.Join(claudeDir, "drawio")
+	if existing, err := os.Readlink(dst); err != nil || existing != skillDir {
+		t.Fatalf("mirror symlink not created: err=%v, link=%q", err, existing)
+	}
+}
+
+// ── installOneSkill ──────────────────────────────────────────────────
+
+func TestInstallOneSkill_PathMismatchReinstall(t *testing.T) {
+	fakeGitHub()
+	defer restoreGitHub()
+
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	os.MkdirAll(sharedDir, 0755)
+
+	// Lock says old path
+	lock := &LockFile{
+		Skills: map[string]LockSkill{
+			"test": {Commit: "fakecommit1234567890123456789012345678901234", Path: "skills/old-path"},
+		},
+	}
+	dirs := []DirEntry{{Name: "shared", Path: sharedDir}}
+
+	// Manifest says new path
+	skill := SkillEntry{
+		Name: "test", Target: "shared",
+		Source: SourceEntry{Repo: "fake/repo", Ref: "main", Path: "skills/new-path"},
+	}
+
+	result, ls := installOneSkill(skill, lock, dirs)
+	if result.Action != "ok" {
+		t.Fatalf("install should succeed with path mismatch, got %+v", result)
+	}
+	if ls == nil || ls.Path != "skills/new-path" {
+		t.Fatalf("lock should record new path, got %+v", ls)
+	}
+}
+
+// ── atomicWriteFile ──────────────────────────────────────────────────
+
+func TestAtomicWriteFile_CreatesParentDir(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sub", "nested", "file.json")
+	data := []byte(`{"key": "value"}`)
+
+	if err := atomicWriteFile(path, data, 0644); err != nil {
+		t.Fatalf("atomicWriteFile with nested dirs: %v", err)
+	}
+	if _, err := os.ReadFile(path); err != nil {
+		t.Fatalf("file not written: %v", err)
+	}
+}

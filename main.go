@@ -587,6 +587,16 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 		return
 	}
 
+	// ── Stale lock cleanup (before early return) ─────────────────
+
+	staleFound := false
+	for _, item := range items {
+		if item.Status == "stale" {
+			delete(lock.Skills, item.Name)
+			staleFound = true
+		}
+	}
+
 	// ── Confirm ────────────────────────────────────────────────────
 
 	// Check if any skill needs execution (install/update)
@@ -603,7 +613,15 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 	}
 
 	if len(needsUpdate) == 0 {
-		if !quiet {
+		if staleFound {
+			lock.Updated = time.Now().Format(time.RFC3339)
+			if err := writeLock(getLockPath(manifestPath), lock); err != nil {
+				warn("lock write: %v", err)
+			}
+			if !quiet {
+				ok("cleaned stale lock entries")
+			}
+		} else if !quiet {
 			fmt.Println("  " + green("Nothing to update."))
 		}
 		return
@@ -631,16 +649,6 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 			ok("%s", s.Name)
 		} else {
 			fail("%s: %s", s.Name, r.Error)
-		}
-	}
-
-	// Handle stale lock entries (remove from lock)
-	for _, item := range items {
-		if item.Status == "stale" {
-			delete(lock.Skills, item.Name)
-			if !quiet {
-				ok("lock: cleaned stale entry %s", item.Name)
-			}
 		}
 	}
 
