@@ -481,6 +481,18 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 			items = append(items, auditItem{s.Name, "stale-disk", "lock missing, disk present"})
 			continue
 		}
+		// Locally consistent — check remote commit
+		latestCommit, err := fetchLatestCommitFn(s.Source.Repo, s.Source.Ref)
+		if err != nil {
+			items = append(items, auditItem{s.Name, "ok",
+				fmt.Sprintf("remote check failed: %v", err)})
+			continue
+		}
+		if hasLock && ls.Commit != latestCommit {
+			items = append(items, auditItem{s.Name, "outdated",
+				fmt.Sprintf("commit %s..%s", ls.Commit[:min(8, len(ls.Commit))], latestCommit[:8])})
+			continue
+		}
 		items = append(items, auditItem{s.Name, "ok", ""})
 	}
 
@@ -528,7 +540,7 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 			switch item.Status {
 			case "ok":
 				statusColor = green("ok")
-			case "missing", "uninstalled", "path-changed", "stale-disk":
+			case "missing", "uninstalled", "path-changed", "stale-disk", "outdated":
 				statusColor = yellow(item.Status)
 				needsAction++
 			case "stale", "stale-lock", "orphan":
@@ -560,13 +572,10 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 
 	// Check if any skill needs execution (install/update)
 	var needsUpdate []SkillEntry
-	updateNames := make(map[string]bool)
 	for _, item := range items {
-		if item.Status == "missing" || item.Status == "uninstalled" || item.Status == "path-changed" || item.Status == "stale-disk" {
+		if item.Status == "missing" || item.Status == "uninstalled" || item.Status == "path-changed" || item.Status == "stale-disk" || item.Status == "outdated" {
 			for _, s := range m.Skills {
 				if s.Name == item.Name {
-					needsUpdate = append(needsUpdate, s)
-					updateNames[s.Name] = true
 					break
 				}
 			}
@@ -626,8 +635,8 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 func sortItems(items []auditItem) {
 	// Non-ok first, then alphabetical
 	statusOrder := map[string]int{
-		"missing": 0, "uninstalled": 1, "path-changed": 2, "stale-disk": 3,
-		"stale": 4, "stale-lock": 5, "orphan": 6, "ok": 7,
+		"outdated": 0, "missing": 1, "uninstalled": 2, "path-changed": 3, "stale-disk": 4,
+		"stale": 5, "stale-lock": 6, "orphan": 7, "ok": 8,
 	}
 	for i := 0; i < len(items); i++ {
 		for j := i + 1; j < len(items); j++ {
