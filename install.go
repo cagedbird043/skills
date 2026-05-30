@@ -223,15 +223,20 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 	files := 0
 	failed := 0
 
+	// Treat empty or "." prefix as root (no filtering)
+	rootSource := prefix == "" || prefix == "."
+
 	for _, entry := range tree {
 		if entry.Type != "blob" {
 			continue
 		}
-		if !strings.HasPrefix(entry.Path, prefixSlash) && entry.Path != prefix {
-			continue
-		}
-		if entry.Path == prefix {
-			continue
+		if !rootSource {
+			if !strings.HasPrefix(entry.Path, prefixSlash) && entry.Path != prefix {
+				continue
+			}
+			if entry.Path == prefix {
+				continue
+			}
 		}
 
 		relPath := strings.TrimPrefix(entry.Path, prefixSlash)
