@@ -120,6 +120,7 @@ func main() {
 	manifestPath := ""
 	var positional []string
 	dryRun := false
+	yes := false
 	keepManifest := false
 
 	for i := 1; i < len(os.Args); i++ {
@@ -148,6 +149,10 @@ func main() {
 		}
 		if arg == "-n" || arg == "--dry-run" {
 			dryRun = true
+			continue
+		}
+		if arg == "-y" || arg == "--yes" {
+			yes = true
 			continue
 		}
 		if arg == "-k" || arg == "--keep-manifest" {
@@ -209,7 +214,7 @@ func main() {
 		if len(positional) > 1 {
 			target = positional[1]
 		}
-		cmdUpdate(m, lock, manifestPath, target, dryRun)
+		cmdUpdate(m, lock, manifestPath, target, dryRun, yes)
 	case "remove":
 		if len(positional) < 2 {
 			fmt.Fprintln(os.Stderr, "skills: remove requires a skill name")
@@ -381,9 +386,24 @@ func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string) {
 	printSummary(results)
 }
 
-// cmdUpdate checks remote commits — makes API calls.
-func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun bool) {
+type auditItem struct {
+	Name   string
+	Status string // ok | missing | uninstalled | stale | stale-lock | orphan | path-changed
+	Detail string
+}
+
+// cmdUpdate audits all skills, shows a plan, and executes updates.
+//   skills update           →  audit + show plan + confirm + execute
+//   skills update --dry-run →  audit + show plan only
+//   skills update -y        →  audit + show plan + execute (no confirm)
+//   skills update <name>    →  update single skill (passthrough to updateOneSkill)
+func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun, yes bool) {
+	// Single-skill update: passthrough to existing updateOneSkill
 	if target != "" {
+		if err := validateSkillName(target); err != nil {
+			fail("%v", err)
+			os.Exit(1)
+		}
 		var found *SkillEntry
 		for _, s := range m.Skills {
 			if s.Name == target {
@@ -395,16 +415,17 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun 
 			fail("skill %q not found in manifest", target)
 			os.Exit(1)
 		}
-
 		r, ls := updateOneSkill(*found, lock, m.Directories)
 		if ls != nil {
 			lock.Skills[found.Name] = *ls
 			lock.Updated = time.Now().Format(time.RFC3339)
-			writeLock(getLockPath(manifestPath), lock)
+			if err := writeLock(getLockPath(manifestPath), lock); err != nil {
+				warn("lock write: %v", err)
+			}
 		}
 		applySymlinks(m)
 		applyMirrors(m)
-		if r.Action == "ok" {
+		if r.Action == "ok" || r.Action == "updated" {
 			ok("%s", found.Name)
 		} else {
 			fail("%s: %s", found.Name, r.Error)
@@ -412,8 +433,198 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun 
 		return
 	}
 
-	results := UpdateAll(m, lock, manifestPath)
-	printSummary(results)
+	// ── Full audit ─────────────────────────────────────────────────
+
+	var items []auditItem
+
+	// Check manifest skills
+	manifestNames := make(map[string]bool)
+	for _, s := range m.Skills {
+		manifestNames[s.Name] = true
+		ls, hasLock := lock.Skills[s.Name]
+		targetPath := resolveTargetPath(s.Target, m.Directories)
+		diskExists := false
+		if targetPath != "" {
+			skillMD := filepath.Join(expandPath(targetPath), s.Name, "SKILL.md")
+			if _, err := os.Stat(skillMD); err == nil {
+				diskExists = true
+			}
+		}
+
+		if !hasLock && !diskExists {
+			items = append(items, auditItem{s.Name, "uninstalled", "never installed"})
+			continue
+		}
+		if hasLock && ls.Path != s.Source.Path {
+			items = append(items, auditItem{s.Name, "path-changed",
+				fmt.Sprintf("lock path %q → %q", ls.Path, s.Source.Path)})
+			continue
+		}
+		if hasLock && !diskExists {
+			items = append(items, auditItem{s.Name, "missing", "files not found on disk"})
+			continue
+		}
+		if !hasLock && diskExists {
+			items = append(items, auditItem{s.Name, "stale-disk", "lock missing, disk present"})
+			continue
+		}
+		items = append(items, auditItem{s.Name, "ok", ""})
+	}
+
+	// Check for stale (lock has it but manifest doesn't)
+	for name, ls := range lock.Skills {
+		if !manifestNames[name] {
+			items = append(items, auditItem{name, "stale",
+				fmt.Sprintf("not in manifest, lock has commit %s", ls.Commit[:min(8, len(ls.Commit))])})
+		}
+	}
+
+	// Check for orphan (disk has directory with SKILL.md but not in manifest or lock)
+	for _, d := range m.Directories {
+		dirPath := expandPath(d.Path)
+		if entries, err := os.ReadDir(dirPath); err == nil {
+			for _, e := range entries {
+				if !e.IsDir() {
+					continue
+				}
+				name := e.Name()
+				if manifestNames[name] {
+					continue
+				}
+				if _, inLock := lock.Skills[name]; inLock {
+					continue
+				}
+				if _, err := os.Stat(filepath.Join(dirPath, name, "SKILL.md")); err == nil {
+					items = append(items, auditItem{name, "orphan",
+						fmt.Sprintf("only on disk in %s", d.Name)})
+				}
+			}
+		}
+	}
+
+	// Sort: non-ok first, then alphabetical
+	sortItems(items)
+
+	// ── Show plan ──────────────────────────────────────────────────
+
+	if !quiet {
+		fmt.Println(bold("Plan:"))
+		needsAction := 0
+		for _, item := range items {
+			var statusColor string
+			switch item.Status {
+			case "ok":
+				statusColor = green("ok")
+			case "missing", "uninstalled", "path-changed", "stale-disk":
+				statusColor = yellow(item.Status)
+				needsAction++
+			case "stale", "stale-lock", "orphan":
+				statusColor = red(item.Status)
+				needsAction++
+			default:
+				statusColor = item.Status
+			}
+			if item.Detail != "" {
+				fmt.Printf("  %-12s %-20s %s\n", statusColor, item.Name, dim(item.Detail))
+			} else {
+				fmt.Printf("  %-12s %-20s\n", statusColor, item.Name)
+			}
+		}
+		fmt.Println()
+		summary := fmt.Sprintf("%d total, %d need action", len(items), needsAction)
+		if needsAction > 0 {
+			fmt.Println("  " + yellow(summary))
+		} else {
+			fmt.Println("  " + green(summary))
+		}
+	}
+
+	if dryRun {
+		return
+	}
+
+	// ── Confirm ────────────────────────────────────────────────────
+
+	// Check if any skill needs execution (install/update)
+	var needsUpdate []SkillEntry
+	updateNames := make(map[string]bool)
+	for _, item := range items {
+		if item.Status == "missing" || item.Status == "uninstalled" || item.Status == "path-changed" || item.Status == "stale-disk" {
+			for _, s := range m.Skills {
+				if s.Name == item.Name {
+					needsUpdate = append(needsUpdate, s)
+					updateNames[s.Name] = true
+					break
+				}
+			}
+		}
+	}
+
+	if len(needsUpdate) == 0 {
+		if !quiet {
+			fmt.Println("  " + green("Nothing to update."))
+		}
+		return
+	}
+
+	if !yes {
+		fmt.Printf("  %s %d skill(s) to update. Proceed? [y/N] ", bold("?"), len(needsUpdate))
+		var answer string
+		fmt.Scanln(&answer)
+		answer = strings.TrimSpace(strings.ToLower(answer))
+		if answer != "y" && answer != "yes" {
+			fmt.Println("  " + yellow("cancelled"))
+			return
+		}
+	}
+
+	// ── Execute ────────────────────────────────────────────────────
+
+	for _, s := range needsUpdate {
+		r, ls := updateOneSkill(s, lock, m.Directories)
+		if ls != nil {
+			lock.Skills[s.Name] = *ls
+		}
+		if r.Action == "ok" || r.Action == "updated" {
+			ok("%s", s.Name)
+		} else {
+			fail("%s: %s", s.Name, r.Error)
+		}
+	}
+
+	// Handle stale lock entries (remove from lock)
+	for _, item := range items {
+		if item.Status == "stale" {
+			delete(lock.Skills, item.Name)
+			if !quiet {
+				ok("lock: cleaned stale entry %s", item.Name)
+			}
+		}
+	}
+
+	lock.Updated = time.Now().Format(time.RFC3339)
+	if err := writeLock(getLockPath(manifestPath), lock); err != nil {
+		warn("lock write: %v", err)
+	}
+	applySymlinks(m)
+	applyMirrors(m)
+}
+
+func sortItems(items []auditItem) {
+	// Non-ok first, then alphabetical
+	statusOrder := map[string]int{
+		"missing": 0, "uninstalled": 1, "path-changed": 2, "stale-disk": 3,
+		"stale": 4, "stale-lock": 5, "orphan": 6, "ok": 7,
+	}
+	for i := 0; i < len(items); i++ {
+		for j := i + 1; j < len(items); j++ {
+			oi := statusOrder[items[i].Status]
+			oj := statusOrder[items[j].Status]
+			if oi > oj || (oi == oj && items[i].Name > items[j].Name) {
+				items[i], items[j] = items[j], items[i]
+			}
+		}
+	}
 }
 
 // cmdRemove removes a skill from lock, manifest, disk, and mirror symlinks.
