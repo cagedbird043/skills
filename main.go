@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const version = "0.5.2"
+const version = "0.5.3"
 
 var (
 	quiet bool // -q flag
