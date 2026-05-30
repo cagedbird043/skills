@@ -47,7 +47,7 @@ flowchart LR
 ### Homebrew（推荐）
 
 ```bash
-brew install cagedbird043/tap/skills
+brew install cagedbird043/tap/skills-cli
 ```
 
 ### Go (if you have Go installed)
