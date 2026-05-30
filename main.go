@@ -365,6 +365,10 @@ func printSummary(results []InstallResult) {
 // cmdInstall trusts the lock file — no remote commit checks.
 func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string) {
 	if target != "" {
+		if err := validateSkillName(target); err != nil {
+			fail("%v", err)
+			os.Exit(1)
+		}
 		var found *SkillEntry
 		for _, s := range m.Skills {
 			if s.Name == target {
@@ -484,7 +488,7 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 		// Locally consistent — check remote commit
 		latestCommit, err := fetchLatestCommitFn(s.Source.Repo, s.Source.Ref)
 		if err != nil {
-			items = append(items, auditItem{s.Name, "ok",
+			items = append(items, auditItem{s.Name, "degraded",
 				fmt.Sprintf("remote check failed: %v", err)})
 			continue
 		}
@@ -540,7 +544,7 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 			switch item.Status {
 			case "ok":
 				statusColor = green("ok")
-			case "missing", "uninstalled", "path-changed", "stale-disk", "outdated":
+			case "missing", "uninstalled", "path-changed", "stale-disk", "outdated", "degraded":
 				statusColor = yellow(item.Status)
 				needsAction++
 			case "stale", "stale-lock", "orphan":
@@ -576,6 +580,7 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 		if item.Status == "missing" || item.Status == "uninstalled" || item.Status == "path-changed" || item.Status == "stale-disk" || item.Status == "outdated" {
 			for _, s := range m.Skills {
 				if s.Name == item.Name {
+					needsUpdate = append(needsUpdate, s)
 					break
 				}
 			}
@@ -635,8 +640,8 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 func sortItems(items []auditItem) {
 	// Non-ok first, then alphabetical
 	statusOrder := map[string]int{
-		"outdated": 0, "missing": 1, "uninstalled": 2, "path-changed": 3, "stale-disk": 4,
-		"stale": 5, "stale-lock": 6, "orphan": 7, "ok": 8,
+		"outdated": 0, "degraded": 1, "missing": 2, "uninstalled": 3, "path-changed": 4, "stale-disk": 5,
+		"stale": 6, "stale-lock": 7, "orphan": 8, "ok": 9,
 	}
 	for i := 0; i < len(items); i++ {
 		for j := i + 1; j < len(items); j++ {
