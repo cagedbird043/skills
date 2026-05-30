@@ -264,12 +264,25 @@ _skills() {
   cmds=(
     'list:list all skills with status'
     'install:install from lock (fast, no remote check)'
-    'update:check remote and update changed skills'
-    'verify:check skill directories exist'
+    'update:audit and update skills'
+    'remove:remove a skill from manifest and disk'
+    'verify:(deprecated) use skills update --dry-run'
     'info:show skill details'
     'completion:generate shell completion'
   )
   _describe -t commands 'skills command' cmds
+
+  # Per-command option completion
+  case "$words[2]" in
+    update)
+      _alternative \
+        'args: :(--dry-run -n --yes -y)'
+      ;;
+    remove)
+      _alternative \
+        'args: :(--dry-run -n --keep-manifest -k)'
+      ;;
+  esac
 }
 
 _skills "$@"
@@ -278,7 +291,7 @@ _skills "$@"
 		fmt.Print(`_skills() {
   local cur prev words cword
   _init_completion || return
-  COMPREPLY=($(compgen -W "list install update verify info completion" -- "$cur"))
+  COMPREPLY=($(compgen -W "list install update remove verify info completion" -- "$cur"))
 }
 complete -F _skills skills
 `)
