@@ -57,7 +57,7 @@ func usage() {
   install [name]    Install from lock (no remote check — fast)
   update            Check remote commits, update changed skills
   remove <name>     Remove a skill from manifest, lock, disk, and mirrors
-  verify            Check that all skill directories exist
+  verify            (deprecated) Use 'skills update --dry-run' instead
   info <name>       Show details about a specific skill
   completion <shell> Generate shell completion (zsh, bash)
 
@@ -722,6 +722,9 @@ func cmdRemove(m *Manifest, lock *LockFile, manifestPath, name string, keepManif
 }
 
 func cmdVerify(m *Manifest) {
+	if !quiet {
+		fmt.Fprintf(os.Stderr, "  %s 'skills verify' is deprecated. Use 'skills update --dry-run' instead.\n", yellow("⚠"))
+	}
 	bad := 0
 	for _, s := range m.Skills {
 		targetPath := resolveTargetPath(s.Target, m.Directories)
