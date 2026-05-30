@@ -17,10 +17,15 @@ jobs:
         with:
           go-version: 'stable'
       - run: go build -ldflags="-s -w" -o skills-linux-amd64 .
+      - run: ./skills-linux-amd64 completion zsh > _skills
       - uses: actions/upload-artifact@v4
         with:
           name: skills-linux-amd64
           path: skills-linux-amd64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skills-zsh-completion
+          path: _skills
 
   build-macos-arm:
     runs-on: macos-14
@@ -57,13 +62,18 @@ jobs:
           pattern: skills-*
           merge-multiple: true
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: skills-zsh-completion
+
       - name: Checksums
-        run: sha256sum skills-* > checksums.txt
+        run: sha256sum skills-* _skills > checksums.txt
 
       - uses: softprops/action-gh-release@v1
         with:
           files: |
             skills-*
+            _skills
             checksums.txt
           generate_release_notes: true
 
@@ -81,12 +91,17 @@ jobs:
           pattern: skills-*
           merge-multiple: true
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: skills-zsh-completion
+
       - name: Compute SHA256
         id: shas
         run: |
           echo "linux_sha=$(sha256sum skills-linux-amd64 | cut -d' ' -f1)" >> "$GITHUB_ENV"
           echo "darwin_arm_sha=$(sha256sum skills-darwin-arm64 | cut -d' ' -f1)" >> "$GITHUB_ENV"
           echo "darwin_amd_sha=$(sha256sum skills-darwin-amd64 | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          echo "completion_sha=$(sha256sum _skills | cut -d' ' -f1)" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v4
         with:
@@ -101,7 +116,8 @@ jobs:
             homebrew-tap/Formula/skills-cli.rb "$VERSION" \
             "${{ env.linux_sha }}" \
             "${{ env.darwin_arm_sha }}" \
-            "${{ env.darwin_amd_sha }}"
+            "${{ env.darwin_amd_sha }}" \
+            "${{ env.completion_sha }}"
           cd homebrew-tap
           git add Formula/skills-cli.rb
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \

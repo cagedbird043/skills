@@ -8,6 +8,7 @@ version = sys.argv[2]
 sha_linux = sys.argv[3]
 sha_darwin_arm = sys.argv[4]
 sha_darwin_amd = sys.argv[5]
+sha_completion = sys.argv[6] if len(sys.argv) > 6 else ""
 
 with open(formula_path) as f:
     content = f.read()
@@ -15,7 +16,7 @@ with open(formula_path) as f:
 # Update version
 content = re.sub(r'version ".*"', f'version "{version}"', content)
 
-# Update sha256 based on URL patterns (sha256 line follows url line for each platform)
+# Update sha256 for binary platforms (sha256 line follows url line)
 platforms = [
     ('skills-darwin-arm64', sha_darwin_arm),
     ('skills-darwin-amd64', sha_darwin_amd),
@@ -26,17 +27,25 @@ for url_suffix, new_sha in platforms:
     pattern = re.escape(f'url "https://github.com/cagedbird043/skills/releases/download/v#{{version}}/{url_suffix}"')
     url_match = re.search(pattern, content)
     if not url_match:
-        # Try without #{version} interpolation (literal match)
         pattern = re.escape(f'{url_suffix}"')
         url_match = re.search(pattern, content)
     if url_match:
-        # Find the sha256 line after this url line
         after_url = content[url_match.end():]
         sha_line_match = re.search(r'sha256 "[^"]*"', after_url)
         if sha_line_match:
             old_sha = sha_line_match.group()
             new = f'sha256 "{new_sha}"'
             content = content.replace(old_sha, new, 1)
+
+# Update completion resource SHA
+if sha_completion:
+    resource_match = re.search(r'resource "completion"', content)
+    if resource_match:
+        after_resource = content[resource_match.end():]
+        sha_line_match = re.search(r'sha256 "[^"]*"', after_resource)
+        if sha_line_match:
+            old_sha = sha_line_match.group()
+            content = content.replace(old_sha, f'sha256 "{sha_completion}"', 1)
 
 with open(formula_path, 'w') as f:
     f.write(content)
