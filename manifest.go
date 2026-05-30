@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ── types ────────────────────────────────────────────────────────────
@@ -80,6 +81,31 @@ func resolveTargetPath(dirName string, dirs []DirEntry) string {
 
 // ── I/O ──────────────────────────────────────────────────────────────
 
+// atomicWriteFile writes data to path atomically by writing to a temp file
+// in the same directory (same filesystem) and renaming.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".tmp-"+filepath.Base(path))
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpName := f.Name()
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("write temp: %w", err)
+	}
+	if err := f.Chmod(perm); err != nil {
+		f.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("chmod temp: %w", err)
+	}
+	f.Close()
+	return os.Rename(tmpName, path)
+}
+
 func readManifest(path string) (*Manifest, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -93,6 +119,14 @@ func readManifest(path string) (*Manifest, error) {
 		m.Version = 1
 	}
 	return &m, nil
+}
+
+func writeManifest(path string, m *Manifest) error {
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode manifest: %w", err)
+	}
+	return atomicWriteFile(path, data, 0644)
 }
 
 func readLock(path string) (*LockFile, error) {
@@ -118,8 +152,19 @@ func writeLock(path string, l *LockFile) error {
 	if err != nil {
 		return fmt.Errorf("encode lock: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("mkdir lock dir: %w", err)
+	return atomicWriteFile(path, data, 0644)
+}
+
+// validateSkillName checks that a skill name is safe to use as a directory name.
+func validateSkillName(name string) error {
+	if name == "" {
+		return fmt.Errorf("skill name is required")
 	}
-	return os.WriteFile(path, data, 0644)
+	if name == "." || name == ".." {
+		return fmt.Errorf("invalid skill name %q", name)
+	}
+	if strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, "\x00") {
+		return fmt.Errorf("skill name %q contains invalid characters", name)
+	}
+	return nil
 }
