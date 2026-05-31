@@ -195,7 +195,9 @@ func main() {
 	lockPath := getLockPath(manifestPath)
 	lock, err := readLock(lockPath)
 	if err != nil {
-		warn("lock: %v", err)
+		fmt.Fprintf(os.Stderr, "skills: lock file corrupted: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  → run 'skills update' to regenerate\n")
+		os.Exit(1)
 	}
 
 	switch subcmd {

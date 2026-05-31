@@ -1469,3 +1469,28 @@ func TestAtomicWriteFile_CreatesParentDir(t *testing.T) {
 		t.Fatalf("file not written: %v", err)
 	}
 }
+
+// ── corrupted lock ───────────────────────────────────────────────────
+
+func TestReadLockCorrupted(t *testing.T) {
+	dir := t.TempDir()
+	lf := filepath.Join(dir, ".lock.json")
+
+	// Missing trailing comma after updated_at (common corruption)
+	corrupt := `{
+  "version": 1,
+  "updated_at": "2026-05-31T13:20:34+08:00"
+  "skills": {}
+}`
+	if err := os.WriteFile(lf, []byte(corrupt), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := readLock(lf)
+	if err == nil {
+		t.Fatal("expected error for corrupted lock file, got nil")
+	}
+	if l != nil {
+		t.Fatalf("expected nil lock on error, got %+v", l)
+	}
+}
