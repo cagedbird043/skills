@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: 'stable'
-      - run: go build -ldflags="-s -w" -o skills-linux-amd64 .
+      - run: go build -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o skills-linux-amd64 .
       - run: ./skills-linux-amd64 completion zsh > _skills
       - uses: actions/upload-artifact@v4
         with:
@@ -34,7 +34,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: 'stable'
-      - run: go build -ldflags="-s -w" -o skills-darwin-arm64 .
+      - run: go build -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o skills-darwin-arm64 .
       - uses: actions/upload-artifact@v4
         with:
           name: skills-darwin-arm64

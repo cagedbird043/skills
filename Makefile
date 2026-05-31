@@ -5,8 +5,10 @@ VERSION = $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev"
 
 all: build
 
+LDFLAGS = -s -w -X main.version=$(VERSION)
+
 build:
-	go build -ldflags="-s -w" -o $(BINARY) .
+	go build -ldflags="$(LDFLAGS)" -o $(BINARY) .
 
 install: build
 	mkdir -p $(HOME)/.local/bin
@@ -20,7 +22,7 @@ clean:
 
 # Cross-compilation helpers
 build-linux:
-	GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o $(BINARY)-linux-amd64 .
+	GOOS=linux GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o $(BINARY)-linux-amd64 .
 
 build-macos:
-	GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o $(BINARY)-darwin-arm64 .
+	GOOS=darwin GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o $(BINARY)-darwin-arm64 .

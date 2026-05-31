@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const version = "0.5.4"
+var version = "dev" // injected via -ldflags=-X main.version=$(git describe --tags --always)
 
 var (
 	quiet bool // -q flag
