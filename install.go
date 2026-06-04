@@ -462,8 +462,11 @@ func runParallel(m *Manifest, lock *LockFile, manifestPath string, fn func(Skill
 	changed := false
 	for r := range results {
 		if r.lockUpdate != nil {
-			lock.Skills[r.name] = *r.lockUpdate
-			changed = true
+			old, hadOld := lock.Skills[r.name]
+			if !hadOld || old.Commit != r.lockUpdate.Commit || old.Path != r.lockUpdate.Path {
+				lock.Skills[r.name] = *r.lockUpdate
+				changed = true
+			}
 		}
 		allResults = append(allResults, r.InstallResult)
 	}
