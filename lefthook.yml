@@ -1,0 +1,11 @@
+pre-commit:
+  parallel: true
+  commands:
+    gofumpt:
+      run: 'gofumpt -d . | grep -q . && echo "run: gofumpt -w ." && exit 1 || true'
+    vet:
+      run: go vet ./...
+    race:
+      run: go test -race -count=1 ./...
+    fuzz:
+      run: go test -fuzz=FuzzParseAddArgs -fuzztime=3s -run='' ./...

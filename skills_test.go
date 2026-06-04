@@ -40,10 +40,10 @@ func restoreGitHub() {
 
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -173,7 +173,7 @@ func TestApplySymlinks_RealDirNotDeleted(t *testing.T) {
 	to := filepath.Join(dir, "source")
 
 	// Create a real directory at "from"
-	if err := os.MkdirAll(from, 0755); err != nil {
+	if err := os.MkdirAll(from, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(from, "KEEP"), "important data")
@@ -198,8 +198,8 @@ func TestApplySymlinks_WrongSymlinkReplaced(t *testing.T) {
 	to2 := filepath.Join(dir, "source2")
 
 	// Create source dirs
-	os.MkdirAll(to1, 0755)
-	os.MkdirAll(to2, 0755)
+	os.MkdirAll(to1, 0o755)
+	os.MkdirAll(to2, 0o755)
 
 	// Create wrong symlink
 	if err := os.Symlink(to1, from); err != nil {
@@ -228,7 +228,7 @@ func TestApplySymlinks_CorrectSymlinkSkipped(t *testing.T) {
 	from := filepath.Join(dir, "target")
 	to := filepath.Join(dir, "source")
 
-	os.MkdirAll(to, 0755)
+	os.MkdirAll(to, 0o755)
 	if err := os.Symlink(to, from); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestApplyMirrors(t *testing.T) {
 	// Create shared skills
 	for _, name := range []string{"drawio", "docx", "pdf"} {
 		skillDir := filepath.Join(sharedDir, name)
-		os.MkdirAll(skillDir, 0755)
+		os.MkdirAll(skillDir, 0o755)
 		writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# "+name)
 	}
 
@@ -299,12 +299,12 @@ func TestApplyMirrors_OrphanCleanup(t *testing.T) {
 	sharedDir := filepath.Join(dir, "shared")
 	claudeDir := filepath.Join(dir, "claude")
 
-	os.MkdirAll(sharedDir, 0755)
-	os.MkdirAll(claudeDir, 0755)
+	os.MkdirAll(sharedDir, 0o755)
+	os.MkdirAll(claudeDir, 0o755)
 
 	// Create orphan symlink in claude dir
 	orphanDir := filepath.Join(sharedDir, "orphan")
-	os.MkdirAll(orphanDir, 0755)
+	os.MkdirAll(orphanDir, 0o755)
 	orphanLink := filepath.Join(claudeDir, "orphan")
 	if err := os.Symlink(orphanDir, orphanLink); err != nil {
 		t.Fatal(err)
@@ -334,8 +334,8 @@ func TestApplyMirrors_RealFileNotReplaced(t *testing.T) {
 	sharedDir := filepath.Join(dir, "shared")
 	claudeDir := filepath.Join(dir, "claude")
 
-	os.MkdirAll(sharedDir, 0755)
-	os.MkdirAll(claudeDir, 0755)
+	os.MkdirAll(sharedDir, 0o755)
+	os.MkdirAll(claudeDir, 0o755)
 
 	// Create a real file at claude dir (not a symlink)
 	realFile := filepath.Join(claudeDir, "drawio")
@@ -343,7 +343,7 @@ func TestApplyMirrors_RealFileNotReplaced(t *testing.T) {
 
 	// Create shared skill
 	skillDir := filepath.Join(sharedDir, "drawio")
-	os.MkdirAll(skillDir, 0755)
+	os.MkdirAll(skillDir, 0o755)
 	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# drawio")
 
 	m := &Manifest{
@@ -372,12 +372,12 @@ func TestApplyMirrors_NoSymlinkForMissingSource(t *testing.T) {
 	sharedDir := filepath.Join(dir, "shared")
 	claudeDir := filepath.Join(dir, "claude")
 
-	os.MkdirAll(sharedDir, 0755)
-	os.MkdirAll(claudeDir, 0755)
+	os.MkdirAll(sharedDir, 0o755)
+	os.MkdirAll(claudeDir, 0o755)
 
 	// Source skill directory exists but has no SKILL.md
 	srcSkill := filepath.Join(sharedDir, "half-installed")
-	os.MkdirAll(srcSkill, 0755)
+	os.MkdirAll(srcSkill, 0o755)
 
 	m := &Manifest{
 		Directories: []DirEntry{
@@ -407,9 +407,9 @@ func TestApplyMirrors_ExternalSymlinkNotRemoved(t *testing.T) {
 	claudeDir := filepath.Join(dir, "claude")
 	externalDir := filepath.Join(dir, "external")
 
-	os.MkdirAll(sharedDir, 0755)
-	os.MkdirAll(claudeDir, 0755)
-	os.MkdirAll(externalDir, 0755)
+	os.MkdirAll(sharedDir, 0o755)
+	os.MkdirAll(claudeDir, 0o755)
+	os.MkdirAll(externalDir, 0o755)
 
 	// Create a claude-only symlink pointing outside the shared pool
 	externalSymlink := filepath.Join(claudeDir, "claude-only")
@@ -441,10 +441,10 @@ func TestApplyMirrors_ExternalSymlinkNotRemoved(t *testing.T) {
 func TestInstallOneSkill_SkipsWhenLockedAndOnDisk(t *testing.T) {
 	dir := t.TempDir()
 	sharedDir := filepath.Join(dir, "shared")
-	os.MkdirAll(sharedDir, 0755)
+	os.MkdirAll(sharedDir, 0o755)
 
 	skillDir := filepath.Join(sharedDir, "drawio")
-	os.MkdirAll(skillDir, 0755)
+	os.MkdirAll(skillDir, 0o755)
 	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# drawio")
 
 	lock := &LockFile{
@@ -510,10 +510,10 @@ func TestInstallOneSkill_ReinstallsWhenLockedButDiskMissing(t *testing.T) {
 func TestInstallOneSkill_EmptyLockWithDisk(t *testing.T) {
 	dir := t.TempDir()
 	sharedDir := filepath.Join(dir, "shared")
-	os.MkdirAll(sharedDir, 0755)
+	os.MkdirAll(sharedDir, 0o755)
 
 	skillDir := filepath.Join(sharedDir, "drawio")
-	os.MkdirAll(skillDir, 0755)
+	os.MkdirAll(skillDir, 0o755)
 	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# drawio")
 
 	// Lock exists but commit is empty — stale from older version
@@ -584,7 +584,7 @@ func TestUpdateOneSkill_SkipsWhenPathAndCommitMatch_Integration(t *testing.T) {
 	dir := t.TempDir()
 	sharedDir := filepath.Join(dir, "shared")
 	skillDir := filepath.Join(sharedDir, "test")
-	os.MkdirAll(skillDir, 0755)
+	os.MkdirAll(skillDir, 0o755)
 	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# test")
 
 	lock := &LockFile{
@@ -693,7 +693,7 @@ func TestCmdUpdate_OutdatedDetectedAndInstalled(t *testing.T) {
 
 	// Create disk state: SKILL.md exists
 	skillDir := filepath.Join(sharedDir, "test")
-	os.MkdirAll(skillDir, 0755)
+	os.MkdirAll(skillDir, 0o755)
 	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# test (old)")
 
 	// Write manifest
@@ -761,7 +761,7 @@ func TestCmdUpdate_DryRunDoesNotModify(t *testing.T) {
 	manifestPath := filepath.Join(dir, ".manifest.json")
 
 	skillDir := filepath.Join(sharedDir, "test")
-	os.MkdirAll(skillDir, 0755)
+	os.MkdirAll(skillDir, 0o755)
 	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# test (old)")
 
 	writeJSON(t, manifestPath, Manifest{
@@ -880,7 +880,7 @@ func TestWriteManifestRoundTrip(t *testing.T) {
 			{
 				Name: "drawio", Target: "shared",
 				Source: SourceEntry{Repo: "a/b", Ref: "main", Path: "skills/drawio"},
-				Note: "test skill",
+				Note:   "test skill",
 			},
 		},
 	}
@@ -915,11 +915,11 @@ func setupRemoveTest(t *testing.T) (string, *Manifest, *LockFile) {
 
 	// Create shared skill
 	skillDir := filepath.Join(sharedDir, "test-skill")
-	os.MkdirAll(skillDir, 0755)
+	os.MkdirAll(skillDir, 0o755)
 	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# test-skill")
 
 	// Create mirror symlink
-	os.MkdirAll(claudeDir, 0755)
+	os.MkdirAll(claudeDir, 0o755)
 	if err := os.Symlink(skillDir, filepath.Join(claudeDir, "test-skill")); err != nil {
 		t.Fatal(err)
 	}
@@ -1097,7 +1097,7 @@ func TestCmdUpdate_Degraded(t *testing.T) {
 	manifestPath := filepath.Join(dir, ".manifest.json")
 
 	skillDir := filepath.Join(sharedDir, "test")
-	os.MkdirAll(skillDir, 0755)
+	os.MkdirAll(skillDir, 0o755)
 	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# test")
 
 	writeJSON(t, manifestPath, Manifest{
@@ -1181,7 +1181,7 @@ func TestCmdUpdate_StaleDisk(t *testing.T) {
 	manifestPath := filepath.Join(dir, ".manifest.json")
 
 	// Create disk skill with SKILL.md
-	os.MkdirAll(filepath.Join(sharedDir, "test"), 0755)
+	os.MkdirAll(filepath.Join(sharedDir, "test"), 0o755)
 	writeFile(t, filepath.Join(sharedDir, "test", "SKILL.md"), "# test")
 
 	writeJSON(t, manifestPath, Manifest{
@@ -1220,7 +1220,7 @@ func TestCmdUpdate_OrphanDetected(t *testing.T) {
 	manifestPath := filepath.Join(dir, ".manifest.json")
 
 	// Create orphan skill directory with SKILL.md
-	os.MkdirAll(filepath.Join(sharedDir, "orphan-skill"), 0755)
+	os.MkdirAll(filepath.Join(sharedDir, "orphan-skill"), 0o755)
 	writeFile(t, filepath.Join(sharedDir, "orphan-skill", "SKILL.md"), "# orphan")
 
 	writeJSON(t, manifestPath, Manifest{
@@ -1258,7 +1258,7 @@ func TestCmdInstall_BulkWithMultipleSkills(t *testing.T) {
 	manifestPath := filepath.Join(dir, ".manifest.json")
 
 	// One skill already installed + locked
-	os.MkdirAll(filepath.Join(sharedDir, "existing"), 0755)
+	os.MkdirAll(filepath.Join(sharedDir, "existing"), 0o755)
 	writeFile(t, filepath.Join(sharedDir, "existing", "SKILL.md"), "# existing")
 
 	writeJSON(t, manifestPath, Manifest{
@@ -1356,7 +1356,7 @@ func TestApplySymlinks_CreateNew(t *testing.T) {
 	from := filepath.Join(dir, "target")
 	to := filepath.Join(dir, "source")
 
-	os.MkdirAll(to, 0755)
+	os.MkdirAll(to, 0o755)
 
 	m := &Manifest{
 		Symlinks: []SymlinkEntry{
@@ -1382,14 +1382,14 @@ func TestApplyMirrors_MigrationFromBlanketSymlink(t *testing.T) {
 	claudeDir := filepath.Join(dir, "claude")
 
 	// Old blanket symlink: claude → shared
-	os.MkdirAll(sharedDir, 0755)
+	os.MkdirAll(sharedDir, 0o755)
 	if err := os.Symlink(sharedDir, claudeDir); err != nil {
 		t.Fatal(err)
 	}
 
 	// Create a shared skill
 	skillDir := filepath.Join(sharedDir, "drawio")
-	os.MkdirAll(skillDir, 0755)
+	os.MkdirAll(skillDir, 0o755)
 	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# drawio")
 
 	m := &Manifest{
@@ -1430,7 +1430,7 @@ func TestInstallOneSkill_PathMismatchReinstall(t *testing.T) {
 
 	dir := t.TempDir()
 	sharedDir := filepath.Join(dir, "shared")
-	os.MkdirAll(sharedDir, 0755)
+	os.MkdirAll(sharedDir, 0o755)
 
 	// Lock says old path
 	lock := &LockFile{
@@ -1462,7 +1462,7 @@ func TestAtomicWriteFile_CreatesParentDir(t *testing.T) {
 	path := filepath.Join(dir, "sub", "nested", "file.json")
 	data := []byte(`{"key": "value"}`)
 
-	if err := atomicWriteFile(path, data, 0644); err != nil {
+	if err := atomicWriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("atomicWriteFile with nested dirs: %v", err)
 	}
 	if _, err := os.ReadFile(path); err != nil {
@@ -1482,7 +1482,7 @@ func TestReadLockCorrupted(t *testing.T) {
   "updated_at": "2026-05-31T13:20:34+08:00"
   "skills": {}
 }`
-	if err := os.WriteFile(lf, []byte(corrupt), 0644); err != nil {
+	if err := os.WriteFile(lf, []byte(corrupt), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1596,7 +1596,7 @@ func TestCmdRemovePreservesOtherSkillFields(t *testing.T) {
 	// Create disk dirs for both skills
 	for _, name := range []string{"keep-me", "remove-me"} {
 		skillDir := filepath.Join(sharedDir, name)
-		os.MkdirAll(skillDir, 0755)
+		os.MkdirAll(skillDir, 0o755)
 		writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# "+name)
 	}
 
@@ -1746,7 +1746,7 @@ func TestCmdRemove_MultipleSkills(t *testing.T) {
 	// Create disk dirs for three skills
 	for _, name := range []string{"drawio", "docx", "pdf"} {
 		skillDir := filepath.Join(sharedDir, name)
-		os.MkdirAll(skillDir, 0755)
+		os.MkdirAll(skillDir, 0o755)
 		writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# "+name)
 	}
 
@@ -2209,6 +2209,7 @@ func TestCmdAdd_NameInference_Integration(t *testing.T) {
 		t.Fatalf("expected name 'test', got %q", m2.Skills[0].Name)
 	}
 }
+
 func TestCmdAdd_NameInference_FromRepo(t *testing.T) {
 	dir := t.TempDir()
 	sharedDir := filepath.Join(dir, "skills")
@@ -2297,7 +2298,7 @@ func TestSourceHash_Computation(t *testing.T) {
 func TestSourceHash_ChangeTriggersReinstall(t *testing.T) {
 	dir := t.TempDir()
 	sharedDir := filepath.Join(dir, "shared")
-	os.MkdirAll(sharedDir, 0755)
+	os.MkdirAll(sharedDir, 0o755)
 
 	skillDir := filepath.Join(sharedDir, "test-skill")
 	lockPath := filepath.Join(dir, ".lock.json")
@@ -2311,7 +2312,7 @@ func TestSourceHash_ChangeTriggersReinstall(t *testing.T) {
 	// Install with source1
 	InstallSkill(SkillEntry{Name: "test-skill", Target: "shared", Source: source1}, skillDir, "")
 	// Write matching commit marker so the lock check passes
-	os.WriteFile(filepath.Join(skillDir, ".skills-commit"), []byte("fakecommit1234567890123456789012345678901234\n"), 0644)
+	os.WriteFile(filepath.Join(skillDir, ".skills-commit"), []byte("fakecommit1234567890123456789012345678901234\n"), 0o644)
 
 	// Create lock with SourceHash from source1
 	lock := &LockFile{
@@ -2343,7 +2344,7 @@ func TestSourceHash_ChangeTriggersReinstall(t *testing.T) {
 		Skills: map[string]LockSkill{
 			"test-skill": {
 				Commit:     "fakecommit1234567890123456789012345678901234",
-				Path:       "skills/test", // path in lock still points to skills/test
+				Path:       "skills/test",              // path in lock still points to skills/test
 				SourceHash: computeSourceHash(source2), // but SourceHash is from skills/new-path
 			},
 		},
@@ -2461,10 +2462,10 @@ func TestInstallSkillFiles_Success(t *testing.T) {
 		Name:   "test-files",
 		Target: "shared",
 		Source: SourceEntry{
-			Type:  "github-files",
-			Repo:  "user/repo",
-			Ref:   "main",
-			Path:  ".",
+			Type: "github-files",
+			Repo: "user/repo",
+			Ref:  "main",
+			Path: ".",
 			Files: map[string]string{
 				"SKILL.md":  "docs/guide/SKILL.md",
 				"README.md": "README.md",
@@ -2503,10 +2504,10 @@ func TestInstallSkillFiles_MissingSKILLMD(t *testing.T) {
 		Name:   "test-files",
 		Target: "shared",
 		Source: SourceEntry{
-			Type:  "github-files",
-			Repo:  "user/repo",
-			Ref:   "main",
-			Path:  ".",
+			Type: "github-files",
+			Repo: "user/repo",
+			Ref:  "main",
+			Path: ".",
 			Files: map[string]string{
 				"README.md": "README.md",
 			},
@@ -2527,10 +2528,10 @@ func TestInstallSkill_UnknownSourceType(t *testing.T) {
 		Name:   "test-unknown",
 		Target: "shared",
 		Source: SourceEntry{
-			Type:  "gitlab-dir",
-			Repo:  "user/repo",
-			Ref:   "main",
-			Path:  ".",
+			Type: "gitlab-dir",
+			Repo: "user/repo",
+			Ref:  "main",
+			Path: ".",
 		},
 	}
 
@@ -2576,4 +2577,70 @@ func TestSourceHash_EmptyLockFallback(t *testing.T) {
 	if r.Action != "ok" || r.Error != "already installed" {
 		t.Fatalf("expected skip with old lock, got %+v", r)
 	}
+}
+
+// ── Fuzzing ────────────────────────────────────────────────────────────
+
+func FuzzParseAddArgs(f *testing.F) {
+	seeds := [][4]string{
+		{"owner/repo", "", "", ""},
+		{"owner/repo", "skills/test", "", ""},
+		{"owner/repo", "--name", "test", ""},
+		{"owner/repo", "--ref=main", "--target=shared", ""},
+		{"owner/repo", "--files=SKILL.md=SKILL.md", "", ""},
+		{"owner/repo", "--name=foo", "--ref=dev", "--target=codex"},
+		{"owner/repo", "--no-install", "", ""},
+		{"x/y", "--name=", "", ""},
+		{"a/b", "--files", ",=,", ""},
+	}
+	for _, s := range seeds {
+		f.Add(s[0], s[1], s[2], s[3])
+	}
+	f.Fuzz(func(t *testing.T, a1, a2, a3, a4 string) {
+		args := []string{a1, a2, a3, a4}
+		// Trim trailing empty args from fuzzer
+		for len(args) > 0 && args[len(args)-1] == "" {
+			args = args[:len(args)-1]
+		}
+		if len(args) == 0 {
+			return
+		}
+		o, err := parseAddArgs(args)
+		if err == nil && o.Repo == "" {
+			t.Errorf("successful parse but empty repo: %+v", o)
+		}
+	})
+}
+
+func FuzzValidateSkillName(f *testing.F) {
+	seeds := []string{"drawio", "my-skill", "a", "", "/etc/passwd", "../escape", "name.with.dots", "name with spaces"}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		// Should never panic
+		validateSkillName(name)
+	})
+}
+
+func FuzzComputeSourceHashDeterminism(f *testing.F) {
+	seeds := []struct {
+		typ, path string
+	}{
+		{"", "skills/test"},
+		{"github-dir", "skills/other"},
+		{"github-files", "."},
+	}
+	for _, s := range seeds {
+		f.Add(s.typ, s.path)
+	}
+	f.Fuzz(func(t *testing.T, typ, path string) {
+		// Determinism: same input twice → same hash
+		src := SourceEntry{Type: typ, Path: path}
+		h1 := computeSourceHash(src)
+		h2 := computeSourceHash(src)
+		if h1 != h2 {
+			t.Errorf("computeSourceHash not deterministic: %s != %s", h1, h2)
+		}
+	})
 }
