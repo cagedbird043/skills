@@ -85,26 +85,31 @@ jobs:
       - name: Compute SHA256
         id: shas
         run: |
-          echo "linux_sha=$(sha256sum skills-linux-amd64 | cut -d' ' -f1)" >> "$GITHUB_ENV"
-          echo "darwin_arm_sha=$(sha256sum skills-darwin-arm64 | cut -d' ' -f1)" >> "$GITHUB_ENV"
-          echo "completion_sha=$(sha256sum _skills | cut -d' ' -f1)" >> "$GITHUB_ENV"
-
-      - uses: actions/checkout@v4
-        with:
-          repository: cagedbird043/homebrew-tap
-          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          path: homebrew-tap
+          echo "linux=$(sha256sum skills-linux-amd64 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "darwin=$(sha256sum skills-darwin-arm64 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "completion=$(sha256sum _skills | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Update formula
         run: |
+          set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          python3 "$GITHUB_WORKSPACE/skills-repo/.github/scripts/update-homebrew-formula.py" \
-            homebrew-tap/Formula/skills-cli.rb "$VERSION" \
-            "${{ env.linux_sha }}" \
-            "${{ env.darwin_arm_sha }}" \
-            "${{ env.completion_sha }}"
+
+          gh repo clone cagedbird043/homebrew-tap
           cd homebrew-tap
+
+          python3 "$GITHUB_WORKSPACE/skills-repo/.github/scripts/update-homebrew-formula.py" \
+            Formula/skills-cli.rb "$VERSION" \
+            "${{ steps.shas.outputs.linux }}" \
+            "${{ steps.shas.outputs.darwin }}" \
+            "${{ steps.shas.outputs.completion }}"
+
+          if git diff --quiet; then
+            echo "No changes — formula already up to date"
+            exit 0
+          fi
+
           git add Formula/skills-cli.rb
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -m "skills-cli: update to v${VERSION}"
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "skills-cli: update to v${VERSION}"
           git push
