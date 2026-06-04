@@ -103,19 +103,9 @@ func findManifest(flagPath string) string {
 		return env
 	}
 
-	candidates := []string{
-		filepath.Join(".", ".manifest.json"),
-		filepath.Join(".", ".skills.json"),
-	}
 	home, err := os.UserHomeDir()
 	if err == nil {
-		candidates = append(candidates, filepath.Join(home, ".config", "skills", ".manifest.json"))
-	}
-
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			return c
-		}
+		return filepath.Join(home, ".config", "skills", ".manifest.json")
 	}
 	return ""
 }
