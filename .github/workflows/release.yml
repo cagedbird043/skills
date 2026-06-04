@@ -90,13 +90,14 @@ jobs:
           echo "completion=$(sha256sum _skills | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Update formula
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
 
           gh repo clone cagedbird043/homebrew-tap
           cd homebrew-tap
-
           python3 "$GITHUB_WORKSPACE/skills-repo/.github/scripts/update-homebrew-formula.py" \
             Formula/skills-cli.rb "$VERSION" \
             "${{ steps.shas.outputs.linux }}" \
