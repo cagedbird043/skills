@@ -39,12 +39,13 @@ type SymlinkEntry struct {
 }
 
 type SkillEntry struct {
-	Name   string       `json:"name"`
-	Target string       `json:"target"`
-	Source SourceEntry  `json:"source"`
-	Note   string       `json:"note,omitempty"`
+	Name   string      `json:"name"`
+	Target string      `json:"target"`
+	Source SourceEntry `json:"source"`
+	Note   string      `json:"note,omitempty"`
 	extra  map[string]json.RawMessage
 }
+
 func (s *SkillEntry) UnmarshalJSON(data []byte) error {
 	type alias SkillEntry
 	if err := json.Unmarshal(data, (*alias)(s)); err != nil {
@@ -95,6 +96,7 @@ type SourceEntry struct {
 	Path  string            `json:"path,omitempty"`
 	extra map[string]json.RawMessage
 }
+
 func (s *SourceEntry) UnmarshalJSON(data []byte) error {
 	type alias SourceEntry
 	if err := json.Unmarshal(data, (*alias)(s)); err != nil {
@@ -140,7 +142,7 @@ func (s SourceEntry) MarshalJSON() ([]byte, error) {
 // ── lock ─────────────────────────────────────────────────────────────
 
 type LockFile struct {
-	Version int                `json:"version"`
+	Version int                  `json:"version"`
 	Skills  map[string]LockSkill `json:"skills"`
 }
 
@@ -185,7 +187,7 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(realPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(realPath), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(realPath), err)
 	}
 	f, err := os.CreateTemp(filepath.Dir(realPath), ".tmp-"+filepath.Base(realPath))
@@ -230,7 +232,7 @@ func writeManifest(path string, m *Manifest) error {
 		return fmt.Errorf("encode manifest: %w", err)
 	}
 	data = append(data, '\n')
-	return atomicWriteFile(path, data, 0644)
+	return atomicWriteFile(path, data, 0o644)
 }
 
 func readLock(path string) (*LockFile, error) {
@@ -256,7 +258,7 @@ func writeLock(path string, l *LockFile) error {
 	if err != nil {
 		return fmt.Errorf("encode lock: %w", err)
 	}
-	return atomicWriteFile(path, data, 0644)
+	return atomicWriteFile(path, data, 0o644)
 }
 
 // validateSkillName checks that a skill name is safe to use as a directory name.

@@ -61,9 +61,11 @@ func githubGET(url string) (*http.Response, error) {
 
 // ── injectable function vars (for testing without real GitHub) ──────
 
-var fetchLatestCommitFn = fetchLatestCommit
-var fetchTreeFn = fetchTree
-var downloadFileFn = downloadFile
+var (
+	fetchLatestCommitFn = fetchLatestCommit
+	fetchTreeFn         = fetchTree
+	downloadFileFn      = downloadFile
+)
 
 // ── GitHub tree / commit SHA ─────────────────────────────────────────
 
@@ -202,7 +204,6 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 		return r
 	}
 
-
 	tree, err := fetchTreeFn(repo, ref)
 	if err != nil {
 		r.Action = "failed"
@@ -212,7 +213,7 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 
 	// Ensure parent directory exists before creating temp dir (same filesystem)
 	parent := filepath.Dir(destDir)
-	if err := os.MkdirAll(parent, 0755); err != nil {
+	if err := os.MkdirAll(parent, 0o755); err != nil {
 		r.Action = "failed"
 		r.Error = fmt.Sprintf("mkdir parent %s: %v", parent, err)
 		return r
@@ -266,7 +267,7 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 			failed++
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 			failed++
 			continue
 		}
@@ -276,12 +277,12 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 			failed++
 			continue
 		}
-		if err := os.WriteFile(localPath, data, 0644); err != nil {
+		if err := os.WriteFile(localPath, data, 0o644); err != nil {
 			failed++
 			continue
 		}
 		if entry.Mode == "100755" {
-			os.Chmod(localPath, 0755)
+			os.Chmod(localPath, 0o755)
 		}
 		files++
 	}
@@ -338,7 +339,7 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 	if refOverride != "" {
 		refUsed = refOverride
 	}
-	os.WriteFile(filepath.Join(destDir, ".skills-commit"), []byte(refUsed+"\n"), 0644)
+	os.WriteFile(filepath.Join(destDir, ".skills-commit"), []byte(refUsed+"\n"), 0o644)
 
 	r.Action = "ok"
 	return r
@@ -348,7 +349,7 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 // without using the tree API. Used for "github-files" type skills.
 func installSkillFiles(r InstallResult, skill SkillEntry, destDir string, ref string, repo string) InstallResult {
 	parent := filepath.Dir(destDir)
-	if err := os.MkdirAll(parent, 0755); err != nil {
+	if err := os.MkdirAll(parent, 0o755); err != nil {
 		r.Action = "failed"
 		r.Error = fmt.Sprintf("mkdir parent %s: %v", parent, err)
 		return r
@@ -403,7 +404,7 @@ func installSkillFiles(r InstallResult, skill SkillEntry, destDir string, ref st
 			return r
 		}
 
-		if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 			r.Action = "failed"
 			r.Error = fmt.Sprintf("mkdir %s: %v", filepath.Dir(localPath), err)
 			return r
@@ -416,7 +417,7 @@ func installSkillFiles(r InstallResult, skill SkillEntry, destDir string, ref st
 			return r
 		}
 
-		if err := os.WriteFile(localPath, data, 0644); err != nil {
+		if err := os.WriteFile(localPath, data, 0o644); err != nil {
 			r.Action = "failed"
 			r.Error = fmt.Sprintf("write %s: %v", localPath, err)
 			return r
@@ -456,7 +457,7 @@ func installSkillFiles(r InstallResult, skill SkillEntry, destDir string, ref st
 	cleanupTmp = false
 
 	// Write commit marker
-	os.WriteFile(filepath.Join(destDir, ".skills-commit"), []byte(ref+"\n"), 0644)
+	os.WriteFile(filepath.Join(destDir, ".skills-commit"), []byte(ref+"\n"), 0o644)
 
 	r.Action = "ok"
 	return r
@@ -619,7 +620,6 @@ func runParallel(m *Manifest, lock *LockFile, manifestPath string, fn func(Skill
 	}
 	close(jobs)
 
-
 	wg.Wait()
 	close(results)
 
@@ -688,7 +688,7 @@ func applySymlinks(m *Manifest) {
 		// Path does not exist — proceed to create
 
 		// Ensure parent directory exists
-		if err := os.MkdirAll(filepath.Dir(from), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(from), 0o755); err != nil {
 			fmt.Fprintf(os.Stderr, "  warning: mkdir %s: %v\n", filepath.Dir(from), err)
 			continue
 		}
@@ -707,7 +707,8 @@ func applySymlinks(m *Manifest) {
 // (e.g., claude, opencode) to access shared skills without duplicating files.
 //
 // The mirror spec is:
-//   { "from": "shared", "to": "claude" }
+//
+//	{ "from": "shared", "to": "claude" }
 //
 // This creates: ~/.claude/skills/drawio → ~/.agents/skills/drawio
 //
@@ -761,7 +762,7 @@ func applyMirrors(m *Manifest) {
 				os.Remove(dst) // remove stale symlink
 
 				// Create parent dir if needed
-				os.MkdirAll(dstDir, 0755)
+				os.MkdirAll(dstDir, 0o755)
 
 				if err := os.Symlink(src, dst); err != nil {
 					fmt.Fprintf(os.Stderr, "  warning: symlink %s -> %s: %v\n", dst, src, err)
@@ -769,29 +770,29 @@ func applyMirrors(m *Manifest) {
 			}
 		}
 
-			// Remove orphan symlinks — only those pointing *into* the source directory
-			// (with proper path boundary, so /tmp/shared-other doesn't match /tmp/shared)
-			srcPrefix := filepath.Clean(srcDir) + string(os.PathSeparator)
-			if entries, err := os.ReadDir(dstDir); err == nil {
-				for _, e := range entries {
-					path := filepath.Join(dstDir, e.Name())
-					fi, err := os.Lstat(path)
-					if err != nil || fi.Mode()&os.ModeSymlink == 0 {
-						continue
-					}
-					target, err := os.Readlink(path)
-					if err != nil {
-						continue
-					}
-					cleanTarget := filepath.Clean(target)
-					if cleanTarget != filepath.Clean(srcDir) && !strings.HasPrefix(cleanTarget, srcPrefix) {
-						continue // pointing outside the source pool — not our managed symlink
-					}
-					if !wanted[e.Name()] {
-						os.Remove(path) // orphan
-					}
+		// Remove orphan symlinks — only those pointing *into* the source directory
+		// (with proper path boundary, so /tmp/shared-other doesn't match /tmp/shared)
+		srcPrefix := filepath.Clean(srcDir) + string(os.PathSeparator)
+		if entries, err := os.ReadDir(dstDir); err == nil {
+			for _, e := range entries {
+				path := filepath.Join(dstDir, e.Name())
+				fi, err := os.Lstat(path)
+				if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+					continue
+				}
+				target, err := os.Readlink(path)
+				if err != nil {
+					continue
+				}
+				cleanTarget := filepath.Clean(target)
+				if cleanTarget != filepath.Clean(srcDir) && !strings.HasPrefix(cleanTarget, srcPrefix) {
+					continue // pointing outside the source pool — not our managed symlink
+				}
+				if !wanted[e.Name()] {
+					os.Remove(path) // orphan
 				}
 			}
+		}
 	}
 }
 

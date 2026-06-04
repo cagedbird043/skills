@@ -11,9 +11,7 @@ import (
 
 var version = "dev" // injected via -ldflags=-X main.version=$(git describe --tags --always)
 
-var (
-	quiet bool // -q flag
-)
+var quiet bool // -q flag
 
 // ── ANSI colors (zero-dependency) ────────────────────────────────────
 
@@ -25,23 +23,37 @@ func isTerminal() bool {
 }
 
 func green(s string) string {
-	if !useColor { return s }
+	if !useColor {
+		return s
+	}
 	return "\033[32m" + s + "\033[0m"
 }
+
 func red(s string) string {
-	if !useColor { return s }
+	if !useColor {
+		return s
+	}
 	return "\033[31m" + s + "\033[0m"
 }
+
 func yellow(s string) string {
-	if !useColor { return s }
+	if !useColor {
+		return s
+	}
 	return "\033[33m" + s + "\033[0m"
 }
+
 func dim(s string) string {
-	if !useColor { return s }
+	if !useColor {
+		return s
+	}
 	return "\033[2m" + s + "\033[0m"
 }
+
 func bold(s string) string {
-	if !useColor { return s }
+	if !useColor {
+		return s
+	}
 	return "\033[1m" + s + "\033[0m"
 }
 
@@ -148,7 +160,6 @@ func parseAddArgs(args []string) (addOptions, error) {
 
 	return o, nil
 }
-
 
 // ── CLI ──────────────────────────────────────────────────────────────
 
@@ -362,7 +373,9 @@ func main() {
 // ── output helpers ───────────────────────────────────────────────────
 
 func ok(msg string, args ...interface{}) {
-	if quiet { return }
+	if quiet {
+		return
+	}
 	fmt.Printf("  "+green("✓")+" %s\n", fmt.Sprintf(msg, args...))
 }
 
@@ -371,7 +384,9 @@ func fail(msg string, args ...interface{}) {
 }
 
 func warn(msg string, args ...interface{}) {
-	if quiet { return }
+	if quiet {
+		return
+	}
 	fmt.Fprintf(os.Stderr, "  "+yellow("⚠")+" %s\n", fmt.Sprintf(msg, args...))
 }
 
@@ -576,10 +591,11 @@ type auditItem struct {
 }
 
 // cmdUpdate audits all skills, shows a plan, and executes updates.
-//   skills update           →  audit + show plan + confirm + execute
-//   skills update --dry-run →  audit + show plan only
-//   skills update -y        →  audit + show plan + execute (no confirm)
-//   skills update <name>    →  update single skill (passthrough to updateOneSkill)
+//
+//	skills update           →  audit + show plan + confirm + execute
+//	skills update --dry-run →  audit + show plan only
+//	skills update -y        →  audit + show plan + execute (no confirm)
+//	skills update <name>    →  update single skill (passthrough to updateOneSkill)
 func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun, yes bool) {
 	// Single-skill update: passthrough to existing updateOneSkill
 	if target != "" {
@@ -638,8 +654,10 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 			continue
 		}
 		if hasLock && ls.Path != s.Source.Path {
-			items = append(items, auditItem{s.Name, "path-changed",
-				fmt.Sprintf("lock path %q → %q", ls.Path, s.Source.Path)})
+			items = append(items, auditItem{
+				s.Name, "path-changed",
+				fmt.Sprintf("lock path %q → %q", ls.Path, s.Source.Path),
+			})
 			continue
 		}
 		if hasLock && !diskExists {
@@ -653,13 +671,17 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 		// Locally consistent — check remote commit
 		latestCommit, err := fetchLatestCommitFn(s.Source.Repo, s.Source.Ref)
 		if err != nil {
-			items = append(items, auditItem{s.Name, "degraded",
-				fmt.Sprintf("remote check failed: %v", err)})
+			items = append(items, auditItem{
+				s.Name, "degraded",
+				fmt.Sprintf("remote check failed: %v", err),
+			})
 			continue
 		}
 		if hasLock && ls.Commit != latestCommit {
-			items = append(items, auditItem{s.Name, "outdated",
-				fmt.Sprintf("commit %s..%s", ls.Commit[:min(8, len(ls.Commit))], latestCommit[:8])})
+			items = append(items, auditItem{
+				s.Name, "outdated",
+				fmt.Sprintf("commit %s..%s", ls.Commit[:min(8, len(ls.Commit))], latestCommit[:8]),
+			})
 			continue
 		}
 		items = append(items, auditItem{s.Name, "ok", ""})
@@ -668,8 +690,10 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 	// Check for stale (lock has it but manifest doesn't)
 	for name, ls := range lock.Skills {
 		if !manifestNames[name] {
-			items = append(items, auditItem{name, "stale",
-				fmt.Sprintf("not in manifest, lock has commit %s", ls.Commit[:min(8, len(ls.Commit))])})
+			items = append(items, auditItem{
+				name, "stale",
+				fmt.Sprintf("not in manifest, lock has commit %s", ls.Commit[:min(8, len(ls.Commit))]),
+			})
 		}
 	}
 
@@ -689,8 +713,10 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 					continue
 				}
 				if _, err := os.Stat(filepath.Join(dirPath, name, "SKILL.md")); err == nil {
-					items = append(items, auditItem{name, "orphan",
-						fmt.Sprintf("only on disk in %s", d.Name)})
+					items = append(items, auditItem{
+						name, "orphan",
+						fmt.Sprintf("only on disk in %s", d.Name),
+					})
 				}
 			}
 		}
@@ -964,7 +990,6 @@ func cmdRemove(m *Manifest, lock *LockFile, manifestPath string, names []string,
 	applyMirrors(m)
 }
 
-
 // cmdAdd adds a new skill to the manifest and optionally installs it.
 // Transaction order: validate → dry-run check → fetch commit → install → write manifest → write lock → mirrors.
 func cmdAdd(m *Manifest, lock *LockFile, manifestPath string, opts addOptions, dryRun bool) {
@@ -1180,13 +1205,14 @@ func cmdFmt(m *Manifest, manifestPath string, dryRun bool) {
 			}
 		}
 	} else {
-		if err := atomicWriteFile(manifestPath, canonical, 0644); err != nil {
+		if err := atomicWriteFile(manifestPath, canonical, 0o644); err != nil {
 			fail("write manifest: %v", err)
 			os.Exit(1)
 		}
 		ok("manifest formatted")
 	}
 }
+
 func cmdInfo(m *Manifest, lock *LockFile, name string) {
 	var found *SkillEntry
 	for _, s := range m.Skills {
