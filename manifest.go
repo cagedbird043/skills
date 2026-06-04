@@ -39,12 +39,96 @@ type SkillEntry struct {
 	Target string       `json:"target"`
 	Source SourceEntry  `json:"source"`
 	Note   string       `json:"note,omitempty"`
+	extra  map[string]json.RawMessage
+}
+func (s *SkillEntry) UnmarshalJSON(data []byte) error {
+	type alias SkillEntry
+	if err := json.Unmarshal(data, (*alias)(s)); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	for k, v := range raw {
+		switch k {
+		case "name", "target", "source", "note":
+			continue
+		default:
+			if s.extra == nil {
+				s.extra = make(map[string]json.RawMessage)
+			}
+			s.extra[k] = v
+		}
+	}
+	return nil
+}
+
+func (s SkillEntry) MarshalJSON() ([]byte, error) {
+	type alias SkillEntry
+	base, err := json.Marshal(alias(s))
+	if err != nil {
+		return nil, err
+	}
+	if len(s.extra) == 0 {
+		return base, nil
+	}
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(base, &merged); err != nil {
+		return nil, err
+	}
+	for k, v := range s.extra {
+		merged[k] = v
+	}
+	return json.Marshal(merged)
 }
 
 type SourceEntry struct {
-	Repo string `json:"repo"`
-	Ref  string `json:"ref"`
-	Path string `json:"path"`
+	Repo  string `json:"repo"`
+	Ref   string `json:"ref"`
+	Path  string `json:"path"`
+	extra map[string]json.RawMessage
+}
+func (s *SourceEntry) UnmarshalJSON(data []byte) error {
+	type alias SourceEntry
+	if err := json.Unmarshal(data, (*alias)(s)); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	for k, v := range raw {
+		switch k {
+		case "repo", "ref", "path":
+			continue
+		default:
+			if s.extra == nil {
+				s.extra = make(map[string]json.RawMessage)
+			}
+			s.extra[k] = v
+		}
+	}
+	return nil
+}
+
+func (s SourceEntry) MarshalJSON() ([]byte, error) {
+	type alias SourceEntry
+	base, err := json.Marshal(alias(s))
+	if err != nil {
+		return nil, err
+	}
+	if len(s.extra) == 0 {
+		return base, nil
+	}
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(base, &merged); err != nil {
+		return nil, err
+	}
+	for k, v := range s.extra {
+		merged[k] = v
+	}
+	return json.Marshal(merged)
 }
 
 // ── lock ─────────────────────────────────────────────────────────────

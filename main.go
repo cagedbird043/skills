@@ -157,6 +157,10 @@ func main() {
 			keepManifest = true
 			continue
 		}
+		if arg == "--complete-names" {
+			completeNames(manifestPath)
+			return
+		}
 		positional = append(positional, arg)
 	}
 
@@ -252,12 +256,27 @@ func warn(msg string, args ...interface{}) {
 
 // ── commands ─────────────────────────────────────────────────────────
 
+// completeNames prints all skill names from the manifest (one per line).
+// Used by shell completion scripts via --complete-names flag.
+func completeNames(manifestPath string) {
+	mp := findManifest(manifestPath)
+	if mp == "" {
+		return
+	}
+	m, err := readManifest(mp)
+	if err != nil {
+		return
+	}
+	for _, s := range m.Skills {
+		fmt.Println(s.Name)
+	}
+}
+
 func cmdCompletion(shell string) {
 	switch shell {
 	case "zsh":
 		fmt.Print(`#compdef skills
 
-_skills() {
   local -a cmds
   cmds=(
     'list:list all skills with status'
@@ -268,8 +287,19 @@ _skills() {
     'completion:generate shell completion'
   )
   _describe -t commands 'skills command' cmds
+  # Positional: skill name completion for commands that take a skill argument
+  case "$words[2]" in
+    remove|install|info|update)
+      if [[ $CURRENT -ge 3 ]]; then
+        local -a skill_names
+        skill_names=(${(f)"$(skills --complete-names 2>/dev/null)"})
+        _describe -t skills 'skill name' skill_names
+        return
+      fi
+      ;;
+  esac
 
-  # Per-command option completion
+  # Flag completion
   case "$words[2]" in
     update)
       _alternative \
@@ -288,6 +318,13 @@ _skills "$@"
 		fmt.Print(`_skills() {
   local cur prev words cword
   _init_completion || return
+  case "$prev" in
+    remove|install|info|update)
+      [[ $cur != -* ]] || return 0
+      COMPREPLY=($(compgen -W "$(skills --complete-names 2>/dev/null)" -- "$cur"))
+      return
+      ;;
+  esac
   COMPREPLY=($(compgen -W "list install update remove info completion" -- "$cur"))
 }
 complete -F _skills skills

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -1492,5 +1493,248 @@ func TestReadLockCorrupted(t *testing.T) {
 	}
 	if l != nil {
 		t.Fatalf("expected nil lock on error, got %+v", l)
+	}
+}
+
+// ── field preservation (unknown JSON fields round-trip) ──────────────
+
+func TestSourceEntryPreservesUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	mf := filepath.Join(dir, ".manifest.json")
+
+	// Write manifest with extra "type" field in source
+	raw := `{
+  "version": 1,
+  "directories": [],
+  "skills": [
+    {
+      "name": "test",
+      "target": "shared",
+      "source": {
+        "type": "github-dir",
+        "repo": "a/b",
+        "ref": "main",
+        "path": "skills/test"
+      }
+    }
+  ]
+}`
+	writeFile(t, mf, raw)
+
+	m, err := readManifest(mf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(m.Skills))
+	}
+
+	// Round-trip: write then read back
+	if err := writeManifest(mf, m); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(mf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The "type": "github-dir" must survive the round-trip
+	if !strings.Contains(string(data), `"type"`) {
+		t.Fatal(`"type" field was stripped from source during writeManifest`)
+	}
+	if !strings.Contains(string(data), `"github-dir"`) {
+		t.Fatal(`"github-dir" value was stripped from source during writeManifest`)
+	}
+}
+
+func TestSkillEntryPreservesUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	mf := filepath.Join(dir, ".manifest.json")
+
+	raw := `{
+  "version": 1,
+  "directories": [],
+  "skills": [
+    {
+      "name": "test",
+      "target": "shared",
+      "category": "network",
+      "source": {
+        "repo": "a/b",
+        "ref": "main",
+        "path": "skills/test"
+      }
+    }
+  ]
+}`
+	writeFile(t, mf, raw)
+
+	m, err := readManifest(mf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeManifest(mf, m); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(mf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(data), `"category"`) {
+		t.Fatal(`"category" field was stripped from SkillEntry during writeManifest`)
+	}
+}
+
+func TestCmdRemovePreservesOtherSkillFields(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+
+	// Create disk dirs for both skills
+	for _, name := range []string{"keep-me", "remove-me"} {
+		skillDir := filepath.Join(sharedDir, name)
+		os.MkdirAll(skillDir, 0755)
+		writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# "+name)
+	}
+
+	// Write manifest with "type" field in source for BOTH skills
+	raw := fmt.Sprintf(`{
+  "version": 1,
+  "directories": [
+    { "name": "shared", "path": %q }
+  ],
+  "skills": [
+    {
+      "name": "keep-me",
+      "target": "shared",
+      "source": {
+        "type": "github-dir",
+        "repo": "a/b",
+        "ref": "main",
+        "path": "skills/keep-me"
+      }
+    },
+    {
+      "name": "remove-me",
+      "target": "shared",
+      "source": {
+        "type": "github-dir",
+        "repo": "a/b",
+        "ref": "main",
+        "path": "skills/remove-me"
+      }
+    }
+  ]
+}`, sharedDir)
+	writeFile(t, manifestPath, raw)
+
+	lockPath := getLockPath(manifestPath)
+	writeJSON(t, lockPath, LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"keep-me":   {Commit: "abc123", Path: "skills/keep-me"},
+			"remove-me": {Commit: "def456", Path: "skills/remove-me"},
+		},
+	})
+
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oldQ := quiet
+	quiet = true
+	cmdRemove(m, lock, manifestPath, "remove-me", false, false)
+	quiet = oldQ
+
+	// Re-read manifest from disk
+	m2, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// "remove-me" should be gone
+	for _, s := range m2.Skills {
+		if s.Name == "remove-me" {
+			t.Fatal("remove-me still in manifest after cmdRemove")
+		}
+	}
+
+	// "keep-me" should still exist
+	var keepMe *SkillEntry
+	for _, s := range m2.Skills {
+		if s.Name == "keep-me" {
+			keepMe = &s
+			break
+		}
+	}
+	if keepMe == nil {
+		t.Fatal("keep-me was removed from manifest")
+	}
+
+	// "keep-me" must still have its "type" field preserved
+	rawAfter, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Count occurrences: should appear exactly once (for keep-me), not zero
+	count := strings.Count(string(rawAfter), `"type": "github-dir"`)
+	if count != 1 {
+		t.Fatalf("expected 1 'type: github-dir' after remove, got %d.\nmanifest:\n%s", count, string(rawAfter))
+	}
+}
+
+func TestCompleteNamesFlag(t *testing.T) {
+	dir := t.TempDir()
+	mf := filepath.Join(dir, ".manifest.json")
+
+	writeJSON(t, mf, Manifest{
+		Version:     1,
+		Directories: []DirEntry{},
+		Skills: []SkillEntry{
+			{Name: "drawio", Target: "shared", Source: SourceEntry{Repo: "a/b", Ref: "main", Path: "skills/drawio"}},
+			{Name: "docx", Target: "shared", Source: SourceEntry{Repo: "a/b", Ref: "main", Path: "skills/docx"}},
+			{Name: "pdf", Target: "shared", Source: SourceEntry{Repo: "a/b", Ref: "main", Path: "skills/pdf"}},
+		},
+	})
+
+	// Set SKILLS_MANIFEST so completeNames can find it in test context
+	t.Setenv("SKILLS_MANIFEST", mf)
+	// Capture stdout via temp file
+	tmpf := filepath.Join(dir, "out")
+	old := os.Stdout
+	f, err := os.Create(tmpf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = f
+
+	completeNames("")
+
+	f.Close()
+	os.Stdout = old
+
+	out, _ := os.ReadFile(tmpf)
+	names := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(names) != 3 {
+		t.Fatalf("expected 3 names, got %d: %v", len(names), names)
+	}
+
+	got := make(map[string]bool)
+	for _, n := range names {
+		got[n] = true
+	}
+	for _, want := range []string{"drawio", "docx", "pdf"} {
+		if !got[want] {
+			t.Fatalf("missing skill name %q in --complete-names output: %v", want, names)
+		}
 	}
 }
