@@ -137,9 +137,8 @@ func (s SourceEntry) MarshalJSON() ([]byte, error) {
 // ── lock ─────────────────────────────────────────────────────────────
 
 type LockFile struct {
-	Version  int                `json:"version"`
-	Updated  string             `json:"updated_at"`
-	Skills   map[string]LockSkill `json:"skills"`
+	Version int                `json:"version"`
+	Skills  map[string]LockSkill `json:"skills"`
 }
 
 type LockSkill struct {

@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 var version = "dev" // injected via -ldflags=-X main.version=$(git describe --tags --always)
@@ -435,7 +434,6 @@ func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string, dryRun
 		r, ls := installOneSkill(*found, lock, m.Directories)
 		if ls != nil {
 			lock.Skills[found.Name] = *ls
-			lock.Updated = time.Now().Format(time.RFC3339)
 			writeLock(getLockPath(manifestPath), lock)
 		}
 		applySymlinks(m)
@@ -489,7 +487,6 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 		r, ls := updateOneSkill(*found, lock, m.Directories)
 		if ls != nil {
 			lock.Skills[found.Name] = *ls
-			lock.Updated = time.Now().Format(time.RFC3339)
 			if err := writeLock(getLockPath(manifestPath), lock); err != nil {
 				warn("lock write: %v", err)
 			}
@@ -668,7 +665,6 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 
 	if len(needsUpdate) == 0 {
 		if staleFound {
-			lock.Updated = time.Now().Format(time.RFC3339)
 			if err := writeLock(getLockPath(manifestPath), lock); err != nil {
 				warn("lock write: %v", err)
 			}
@@ -706,7 +702,6 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 		}
 	}
 
-	lock.Updated = time.Now().Format(time.RFC3339)
 	if err := writeLock(getLockPath(manifestPath), lock); err != nil {
 		warn("lock write: %v", err)
 	}
@@ -805,7 +800,6 @@ func cmdRemove(m *Manifest, lock *LockFile, manifestPath string, names []string,
 		}
 	}
 	if lockChanged {
-		lock.Updated = time.Now().Format(time.RFC3339)
 		if err := writeLock(getLockPath(manifestPath), lock); err != nil {
 			warn("lock write: %v", err)
 		} else {

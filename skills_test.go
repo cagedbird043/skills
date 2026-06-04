@@ -111,7 +111,6 @@ func TestWriteLockRoundTrip(t *testing.T) {
 
 	l := &LockFile{
 		Version: 1,
-		Updated: "2026-01-01T00:00:00Z",
 		Skills: map[string]LockSkill{
 			"drawio": {Commit: "abc123", Path: "skills/drawio"},
 		},

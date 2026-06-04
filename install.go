@@ -493,7 +493,6 @@ func runParallel(m *Manifest, lock *LockFile, manifestPath string, fn func(Skill
 	applyMirrors(m)
 
 	if changed {
-		lock.Updated = time.Now().Format(time.RFC3339)
 		if err := writeLock(getLockPath(manifestPath), lock); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: write lock: %v\n", err)
 		}
