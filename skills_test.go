@@ -965,7 +965,7 @@ func TestCmdRemove_RemovesFromAllLayers(t *testing.T) {
 	manifestPath, m, lock := setupRemoveTest(t)
 	oldQ := quiet
 	quiet = true
-	cmdRemove(m, lock, manifestPath, "test-skill", false, false)
+	cmdRemove(m, lock, manifestPath, []string{"test-skill"}, false, false)
 	quiet = oldQ
 
 	// Manifest should not have test-skill
@@ -993,7 +993,7 @@ func TestCmdRemove_KeepManifest(t *testing.T) {
 	manifestPath, m, lock := setupRemoveTest(t)
 	oldQ := quiet
 	quiet = true
-	cmdRemove(m, lock, manifestPath, "test-skill", true, false)
+	cmdRemove(m, lock, manifestPath, []string{"test-skill"}, true, false)
 	quiet = oldQ
 
 	// Manifest should still have test-skill
@@ -1022,7 +1022,7 @@ func TestCmdRemove_DryRun(t *testing.T) {
 	manifestPath, m, lock := setupRemoveTest(t)
 	oldQ := quiet
 	quiet = true
-	cmdRemove(m, lock, manifestPath, "test-skill", false, true)
+	cmdRemove(m, lock, manifestPath, []string{"test-skill"}, false, true)
 	quiet = oldQ
 
 	// Nothing should be modified
@@ -1652,7 +1652,7 @@ func TestCmdRemovePreservesOtherSkillFields(t *testing.T) {
 
 	oldQ := quiet
 	quiet = true
-	cmdRemove(m, lock, manifestPath, "remove-me", false, false)
+	cmdRemove(m, lock, manifestPath, []string{"remove-me"}, false, false)
 	quiet = oldQ
 
 	// Re-read manifest from disk
@@ -1736,5 +1736,97 @@ func TestCompleteNamesFlag(t *testing.T) {
 		if !got[want] {
 			t.Fatalf("missing skill name %q in --complete-names output: %v", want, names)
 		}
+	}
+}
+
+func TestCmdRemove_MultipleSkills(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+
+	// Create disk dirs for three skills
+	for _, name := range []string{"drawio", "docx", "pdf"} {
+		skillDir := filepath.Join(sharedDir, name)
+		os.MkdirAll(skillDir, 0755)
+		writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# "+name)
+	}
+
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{
+			{Name: "drawio", Target: "shared", Source: SourceEntry{Repo: "a/b", Path: "skills/drawio"}},
+			{Name: "docx", Target: "shared", Source: SourceEntry{Repo: "a/b", Path: "skills/docx"}},
+			{Name: "pdf", Target: "shared", Source: SourceEntry{Repo: "a/b", Path: "skills/pdf"}},
+		},
+	})
+
+	lockPath := getLockPath(manifestPath)
+	writeJSON(t, lockPath, LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"drawio": {Commit: "abc123", Path: "skills/drawio"},
+			"docx":   {Commit: "def456", Path: "skills/docx"},
+			"pdf":    {Commit: "ghi789", Path: "skills/pdf"},
+		},
+	})
+
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oldQ := quiet
+	quiet = true
+	cmdRemove(m, lock, manifestPath, []string{"drawio", "pdf"}, false, false)
+	quiet = oldQ
+
+	// Re-read from disk
+	m2, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock2, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// drawio and pdf should be gone
+	for _, name := range []string{"drawio", "pdf"} {
+		for _, s := range m2.Skills {
+			if s.Name == name {
+				t.Fatalf("%s still in manifest after multi-remove", name)
+			}
+		}
+		if _, ok := lock2.Skills[name]; ok {
+			t.Fatalf("%s still in lock after multi-remove", name)
+		}
+		if _, err := os.Stat(filepath.Join(sharedDir, name, "SKILL.md")); err == nil {
+			t.Fatalf("%s still on disk after multi-remove", name)
+		}
+	}
+
+	// docx should remain
+	found := false
+	for _, s := range m2.Skills {
+		if s.Name == "docx" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("docx was removed from manifest")
+	}
+	if _, ok := lock2.Skills["docx"]; !ok {
+		t.Fatal("docx was removed from lock")
+	}
+	if _, err := os.Stat(filepath.Join(sharedDir, "docx", "SKILL.md")); err != nil {
+		t.Fatal("docx was removed from disk")
 	}
 }

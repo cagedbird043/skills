@@ -56,7 +56,7 @@ func usage() {
   list              List all skills with installation status
   install [name]    Install from lock (no remote check — fast)
   update            Check remote commits, update changed skills
-  remove <name>     Remove a skill from manifest, lock, disk, and mirrors
+  remove <name...>   Remove one or more skills from manifest, lock, disk, and mirrors
   info <name>       Show details about a specific skill
   completion <shell> Generate shell completion (zsh, bash)
 
@@ -77,6 +77,7 @@ func usage() {
   skills install drawio
   skills update
   skills remove drawio
+  skills remove drawio docx pdf
   skills remove drawio --keep-manifest
   skills remove drawio --dry-run
   skills info drawio
@@ -221,10 +222,10 @@ func main() {
 		cmdUpdate(m, lock, manifestPath, target, dryRun, yes)
 	case "remove":
 		if len(positional) < 2 {
-			fmt.Fprintln(os.Stderr, "skills: remove requires a skill name")
+			fmt.Fprintln(os.Stderr, "skills: remove requires at least one skill name")
 			os.Exit(1)
 		}
-		cmdRemove(m, lock, manifestPath, positional[1], keepManifest, dryRun)
+		cmdRemove(m, lock, manifestPath, positional[1:], keepManifest, dryRun)
 	case "info":
 		if len(positional) < 2 {
 			fmt.Fprintln(os.Stderr, "skills: info requires a skill name")
@@ -711,97 +712,128 @@ func sortItems(items []auditItem) {
 	}
 }
 
-// cmdRemove removes a skill from lock, manifest, disk, and mirror symlinks.
-// Execution order: lock → manifest → disk → applyMirrors (resilient to partial failure).
-func cmdRemove(m *Manifest, lock *LockFile, manifestPath, name string, keepManifest, dryRun bool) {
-	if err := validateSkillName(name); err != nil {
-		fail("%v", err)
-		os.Exit(1)
+// cmdRemove removes one or more skills from lock, manifest, disk, and mirror symlinks.
+// Execution order: validate → lock → manifest → disk → applyMirrors.
+// Lock and manifest are written once (batched) for all names.
+func cmdRemove(m *Manifest, lock *LockFile, manifestPath string, names []string, keepManifest, dryRun bool) {
+	// Phase 0: validate all names, check existence
+	type removeTarget struct {
+		name      string
+		skillInfo *SkillEntry
+		inLock    bool
 	}
-
-	// Capture skill info before any modifications
-	var skillInfo *SkillEntry
-	for _, s := range m.Skills {
-		if s.Name == name {
-			skillInfo = &s
-			break
+	targets := make([]removeTarget, 0, len(names))
+	allOk := true
+	for _, name := range names {
+		if err := validateSkillName(name); err != nil {
+			fail("%v", err)
+			allOk = false
+			continue
 		}
+		var skillInfo *SkillEntry
+		for _, s := range m.Skills {
+			if s.Name == name {
+				skillInfo = &s
+				break
+			}
+		}
+		_, inLock := lock.Skills[name]
+		if skillInfo == nil && !inLock {
+			fail("skill %q not found in manifest or lock", name)
+			allOk = false
+			continue
+		}
+		targets = append(targets, removeTarget{name, skillInfo, inLock})
 	}
-	_, inLock := lock.Skills[name]
-
-	if skillInfo == nil && !inLock {
-		fail("skill %q not found in manifest or lock", name)
+	if !allOk {
 		os.Exit(1)
 	}
 
-	// Show what we'd do
+	// Show plan
 	if !quiet {
-		fmt.Printf("  %s %s:\n", bold("remove"), name)
-		if skillInfo != nil {
-			if keepManifest {
-				fmt.Printf("    manifest: %s (keep entry)\n", yellow("keep"))
-			} else {
-				fmt.Printf("    manifest: remove entry\n")
+		for _, t := range targets {
+			fmt.Printf("  %s %s:\n", bold("remove"), t.name)
+			if t.skillInfo != nil {
+				if keepManifest {
+					fmt.Printf("    manifest: %s (keep entry)\n", yellow("keep"))
+				} else {
+					fmt.Printf("    manifest: remove entry\n")
+				}
 			}
-		}
-		if inLock {
-			fmt.Printf("    lock: remove entry\n")
-		}
-		// Check disk
-		for _, d := range m.Directories {
-			dirPath := expandPath(d.Path)
-			if _, err := os.Stat(filepath.Join(dirPath, name, "SKILL.md")); err == nil {
-				fmt.Printf("    disk: remove %s/%s\n", d.Name, name)
+			if t.inLock {
+				fmt.Printf("    lock: remove entry\n")
 			}
+			for _, d := range m.Directories {
+				dirPath := expandPath(d.Path)
+				if _, err := os.Stat(filepath.Join(dirPath, t.name, "SKILL.md")); err == nil {
+					fmt.Printf("    disk: remove %s/%s\n", d.Name, t.name)
+				}
+			}
+			fmt.Printf("    mirrors: cleanup symlinks\n")
 		}
-		fmt.Printf("    mirrors: cleanup symlinks\n")
 	}
 
 	if dryRun {
 		return
 	}
 
-	// 1. Lock — always try to remove
-	if inLock {
-		delete(lock.Skills, name)
+	// Phase 1: Lock — batch remove from map, write once
+	lockChanged := false
+	for _, t := range targets {
+		if t.inLock {
+			delete(lock.Skills, t.name)
+			lockChanged = true
+		}
+	}
+	if lockChanged {
 		lock.Updated = time.Now().Format(time.RFC3339)
 		if err := writeLock(getLockPath(manifestPath), lock); err != nil {
 			warn("lock write: %v", err)
 		} else {
-			ok("lock: removed entry")
+			ok("lock: removed %d entries", len(targets))
 		}
 	}
 
-	// 2. Manifest — remove unless --keep-manifest
-	if skillInfo != nil && !keepManifest {
-		newSkills := make([]SkillEntry, 0, len(m.Skills)-1)
-		for _, s := range m.Skills {
-			if s.Name != name {
-				newSkills = append(newSkills, s)
+	// Phase 2: Manifest — batch filter, write once
+	if !keepManifest {
+		removeSet := make(map[string]bool, len(targets))
+		for _, t := range targets {
+			if t.skillInfo != nil {
+				removeSet[t.name] = true
 			}
 		}
-		m.Skills = newSkills
-		if err := writeManifest(manifestPath, m); err != nil {
-			warn("manifest write: %v", err)
-		} else {
-			ok("manifest: removed entry")
-		}
-	}
-
-	// 3. Disk — remove skill directory from all configured directories
-	for _, d := range m.Directories {
-		dirPath := expandPath(d.Path)
-		skillDir := filepath.Join(dirPath, name)
-		if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err == nil {
-			if err := os.RemoveAll(skillDir); err != nil {
-				warn("disk: %s: %v", skillDir, err)
+		if len(removeSet) > 0 {
+			newSkills := make([]SkillEntry, 0, len(m.Skills))
+			for _, s := range m.Skills {
+				if !removeSet[s.Name] {
+					newSkills = append(newSkills, s)
+				}
+			}
+			m.Skills = newSkills
+			if err := writeManifest(manifestPath, m); err != nil {
+				warn("manifest write: %v", err)
 			} else {
-				ok("disk: removed %s/%s", d.Name, name)
+				ok("manifest: removed %d entries", len(removeSet))
 			}
 		}
 	}
 
-	// 4. Mirrors — applyMirrors cleans up orphan symlinks
+	// Phase 3: Disk — remove skill directories
+	for _, t := range targets {
+		for _, d := range m.Directories {
+			dirPath := expandPath(d.Path)
+			skillDir := filepath.Join(dirPath, t.name)
+			if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err == nil {
+				if err := os.RemoveAll(skillDir); err != nil {
+					warn("disk: %s: %v", skillDir, err)
+				} else {
+					ok("disk: removed %s/%s", d.Name, t.name)
+				}
+			}
+		}
+	}
+
+	// Phase 4: Mirrors — applyMirrors cleans up orphan symlinks
 	applyMirrors(m)
 }
 
