@@ -1829,3 +1829,751 @@ func TestCmdRemove_MultipleSkills(t *testing.T) {
 		t.Fatal("docx was removed from disk")
 	}
 }
+
+// ── add command ───────────────────────────────────────────────────────
+
+func TestParseAddArgs_Valid(t *testing.T) {
+	t.Run("basic owner/repo", func(t *testing.T) {
+		o, err := parseAddArgs([]string{"owner/repo"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if o.Repo != "owner/repo" || o.Path != "." || o.Ref != "main" || o.Target != "shared" {
+			t.Fatalf("unexpected options: %+v", o)
+		}
+	})
+	t.Run("with path", func(t *testing.T) {
+		o, err := parseAddArgs([]string{"owner/repo", "skills/myskill"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if o.Repo != "owner/repo" || o.Path != "skills/myskill" {
+			t.Fatalf("unexpected options: %+v", o)
+		}
+	})
+	t.Run("with all flags", func(t *testing.T) {
+		o, err := parseAddArgs([]string{
+			"owner/repo", "--name", "myname", "--ref", "dev",
+			"--target", "claude", "--files", "SKILL.md=README.md",
+			"--no-install",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if o.Name != "myname" || o.Ref != "dev" || o.Target != "claude" {
+			t.Fatalf("unexpected options: %+v", o)
+		}
+		if o.FilesSpec != "SKILL.md=README.md" || !o.NoInstall {
+			t.Fatalf("unexpected options: %+v", o)
+		}
+	})
+	t.Run("flag=value syntax", func(t *testing.T) {
+		o, err := parseAddArgs([]string{"owner/repo", "--name=testname", "--ref=develop"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if o.Name != "testname" || o.Ref != "develop" {
+			t.Fatalf("unexpected options: %+v", o)
+		}
+	})
+}
+
+func TestParseAddArgs_Invalid(t *testing.T) {
+	t.Run("missing repo", func(t *testing.T) {
+		_, err := parseAddArgs([]string{})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+	t.Run("invalid repo format", func(t *testing.T) {
+		_, err := parseAddArgs([]string{"invalid"})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+	t.Run("repo with URL", func(t *testing.T) {
+		_, err := parseAddArgs([]string{"https://github.com/owner/repo.git"})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+	t.Run("repo with spaces", func(t *testing.T) {
+		_, err := parseAddArgs([]string{"owner /repo"})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+	t.Run("unknown flag", func(t *testing.T) {
+		_, err := parseAddArgs([]string{"owner/repo", "--bogus", "x"})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+	t.Run("flag missing value", func(t *testing.T) {
+		_, err := parseAddArgs([]string{"owner/repo", "--name"})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+	t.Run("extra positional", func(t *testing.T) {
+		_, err := parseAddArgs([]string{"owner/repo", "path1", "path2"})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+}
+
+func TestCmdAdd_GitHubDir_Success(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "skills")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{},
+	})
+
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath := getLockPath(manifestPath)
+	lock, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fakeGitHub()
+	defer restoreGitHub()
+
+	opts := addOptions{
+		Repo:   "user/repo",
+		Path:   "skills/test",
+		Ref:    "main",
+		Target: "shared",
+	}
+
+	oldQ := quiet
+	quiet = true
+	cmdAdd(m, lock, manifestPath, opts, false)
+	quiet = oldQ
+
+	// Verify manifest has the skill
+	m2, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m2.Skills) != 1 || m2.Skills[0].Name != "test" {
+		t.Fatalf("unexpected manifest skills: %+v", m2.Skills)
+	}
+	if m2.Skills[0].Source.Repo != "user/repo" || m2.Skills[0].Source.Path != "skills/test" {
+		t.Fatalf("unexpected source: %+v", m2.Skills[0].Source)
+	}
+
+	// Verify lock has entry with commit and sourceHash
+	lock2, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ls, ok := lock2.Skills["test"]
+	if !ok {
+		t.Fatal("test not in lock")
+	}
+	if ls.Commit != "fakecommit1234567890123456789012345678901234" {
+		t.Fatalf("unexpected commit: %q", ls.Commit)
+	}
+	if ls.SourceHash == "" {
+		t.Fatal("expected sourceHash in lock")
+	}
+	if ls.Path != "skills/test" {
+		t.Fatalf("unexpected path: %q", ls.Path)
+	}
+
+	// Verify SKILL.md on disk
+	targetPath := resolveTargetPath("shared", m2.Directories)
+	if _, err := os.Stat(filepath.Join(expandPath(targetPath), "test", "SKILL.md")); err != nil {
+		t.Fatalf("SKILL.md not on disk: %v", err)
+	}
+}
+
+func TestCmdAdd_GitHubDir_DryRun(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "skills")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{},
+	})
+
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath := getLockPath(manifestPath)
+	lock, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	opts := addOptions{
+		Repo:   "user/repo",
+		Path:   "skills/test",
+		Ref:    "main",
+		Target: "shared",
+	}
+
+	// Dry-run — should not write manifest, lock, or disk
+	oldQ := quiet
+	quiet = true
+	cmdAdd(m, lock, manifestPath, opts, true)
+	quiet = oldQ
+
+	// Manifest should be unchanged (empty)
+	m2, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m2.Skills) != 0 {
+		t.Fatal("dry-run should not modify manifest")
+	}
+
+	// Lock should be unchanged
+	lock2, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lock2.Skills) != 0 {
+		t.Fatal("dry-run should not modify lock")
+	}
+
+	// No disk directory should exist
+	targetPath := resolveTargetPath("shared", m2.Directories)
+	if _, err := os.Stat(filepath.Join(expandPath(targetPath), "test", "SKILL.md")); err == nil {
+		t.Fatal("dry-run should not create files on disk")
+	}
+}
+
+func TestCmdAdd_GitHubFiles(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "skills")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{},
+	})
+
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath := getLockPath(manifestPath)
+	lock, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fakeGitHub()
+	defer restoreGitHub()
+
+	opts := addOptions{
+		Repo:      "user/repo",
+		Path:      ".",
+		Ref:       "main",
+		Target:    "shared",
+		FilesSpec: "SKILL.md=docs/SKILL.md,README.md=docs/README.md",
+	}
+
+	oldQ := quiet
+	quiet = true
+	cmdAdd(m, lock, manifestPath, opts, false)
+	quiet = oldQ
+
+	// Verify manifest has type github-files
+	m2, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m2.Skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(m2.Skills))
+	}
+	skill := m2.Skills[0]
+	if skill.Source.Type != "github-files" {
+		t.Fatalf("expected github-files type, got %q", skill.Source.Type)
+	}
+	if len(skill.Source.Files) != 2 {
+		t.Fatalf("expected 2 files, got %d", len(skill.Source.Files))
+	}
+	if skill.Source.Files["SKILL.md"] != "docs/SKILL.md" {
+		t.Fatalf("unexpected files mapping: %+v", skill.Source.Files)
+	}
+
+	// Verify lock
+	lock2, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ls, ok := lock2.Skills["repo"] // name inferred from repo
+	if !ok {
+		t.Fatal("repo not in lock")
+	}
+	if ls.SourceHash == "" {
+		t.Fatal("expected sourceHash")
+	}
+
+	// Verify SKILL.md on disk (downloaded from docs/SKILL.md)
+	targetPath := resolveTargetPath("shared", m2.Directories)
+	skillDir := filepath.Join(expandPath(targetPath), "repo")
+	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err != nil {
+		t.Fatalf("SKILL.md not on disk: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "README.md")); err != nil {
+		t.Fatalf("README.md not on disk: %v", err)
+	}
+}
+
+func TestCmdAdd_NameInference(t *testing.T) {
+	t.Run("from path", func(t *testing.T) {
+		o, err := parseAddArgs([]string{"user/repo", "skills/anysearch"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The name is inferred in cmdAdd, not parseAddArgs
+		// We test the path parsing here, the name inference happens in cmdAdd
+		if o.Path != "skills/anysearch" {
+			t.Fatalf("expected skills/anysearch, got %q", o.Path)
+		}
+	})
+	t.Run("from repo basename", func(t *testing.T) {
+		o, err := parseAddArgs([]string{"someone/repo.git"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if o.Repo != "someone/repo.git" {
+			t.Fatalf("expected someone/repo.git, got %q", o.Repo)
+		}
+	})
+}
+
+func TestCmdAdd_NameInference_Integration(t *testing.T) {
+	// Test that name inference from path works end-to-end
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "skills")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{},
+	})
+
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := readLock(getLockPath(manifestPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fakeGitHub()
+	defer restoreGitHub()
+
+	// Use a path that exists in the mock tree: skills/test → name "test"
+	opts := addOptions{
+		Repo:   "someone/repo",
+		Path:   "skills/test",
+		Ref:    "main",
+		Target: "shared",
+	}
+
+	oldQ := quiet
+	quiet = true
+	cmdAdd(m, lock, manifestPath, opts, false)
+	quiet = oldQ
+
+	// Name should be inferred from path: "test"
+	m2, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m2.Skills) != 1 || m2.Skills[0].Name != "test" {
+		t.Fatalf("expected name 'test', got %q", m2.Skills[0].Name)
+	}
+}
+func TestCmdAdd_NameInference_FromRepo(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "skills")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{},
+	})
+
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := readLock(getLockPath(manifestPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Use fakeGitHubRoot because path is "." and needs root-level SKILL.md
+	fakeGitHubRoot()
+	defer restoreGitHub()
+
+	opts := addOptions{
+		Repo:   "someone/repo.git",
+		Path:   ".",
+		Ref:    "main",
+		Target: "shared",
+	}
+
+	oldQ := quiet
+	quiet = true
+	cmdAdd(m, lock, manifestPath, opts, false)
+	quiet = oldQ
+
+	// Name should be inferred from repo: "repo"
+	m2, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m2.Skills) != 1 || m2.Skills[0].Name != "repo" {
+		t.Fatalf("expected name 'repo', got %q", m2.Skills[0].Name)
+	}
+}
+
+// ── SourceHash tests ──────────────────────────────────────────────────
+
+func TestSourceHash_Computation(t *testing.T) {
+	// Empty type + path
+	h1 := computeSourceHash(SourceEntry{Type: "", Path: "skills/test"})
+	if h1 == "" {
+		t.Fatal("expected non-empty hash")
+	}
+	// Different path → different hash
+	h2 := computeSourceHash(SourceEntry{Type: "", Path: "skills/other"})
+	if h1 == h2 {
+		t.Fatal("different paths should produce different hashes")
+	}
+	// With files map
+	h3 := computeSourceHash(SourceEntry{
+		Type:  "github-files",
+		Path:  ".",
+		Files: map[string]string{"SKILL.md": "docs/SKILL.md"},
+	})
+	if h3 == "" {
+		t.Fatal("expected non-empty hash for files type")
+	}
+	// Different files → different hash
+	h4 := computeSourceHash(SourceEntry{
+		Type:  "github-files",
+		Path:  ".",
+		Files: map[string]string{"SKILL.md": "other/SKILL.md"},
+	})
+	if h3 == h4 {
+		t.Fatal("different file mappings should produce different hashes")
+	}
+	// Deterministic
+	h5 := computeSourceHash(SourceEntry{Type: "", Path: "skills/test"})
+	if h1 != h5 {
+		t.Fatal("computeSourceHash should be deterministic")
+	}
+}
+
+func TestSourceHash_ChangeTriggersReinstall(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	os.MkdirAll(sharedDir, 0755)
+
+	skillDir := filepath.Join(sharedDir, "test-skill")
+	lockPath := filepath.Join(dir, ".lock.json")
+
+	fakeGitHub()
+	defer restoreGitHub()
+
+	source1 := SourceEntry{Repo: "a/b", Ref: "main", Path: "skills/test"}
+	source2 := SourceEntry{Repo: "a/b", Ref: "main", Path: "skills/new-path"}
+
+	// Install with source1
+	InstallSkill(SkillEntry{Name: "test-skill", Target: "shared", Source: source1}, skillDir, "")
+	// Write matching commit marker so the lock check passes
+	os.WriteFile(filepath.Join(skillDir, ".skills-commit"), []byte("fakecommit1234567890123456789012345678901234\n"), 0644)
+
+	// Create lock with SourceHash from source1
+	lock := &LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"test-skill": {
+				Commit:     "fakecommit1234567890123456789012345678901234",
+				Path:       "skills/test",
+				SourceHash: computeSourceHash(source1),
+			},
+		},
+	}
+
+	// First call — should skip (SourceHash matches)
+	writeJSON(t, lockPath, lock)
+	lock2, _ := readLock(lockPath)
+	r1, _ := installOneSkill(
+		SkillEntry{Name: "test-skill", Target: "shared", Source: source1},
+		lock2,
+		[]DirEntry{{Name: "shared", Path: sharedDir}},
+	)
+	if r1.Action != "ok" || r1.Error != "already installed" {
+		t.Fatalf("expected skip, got %+v", r1)
+	}
+
+	// Update lock with SourceHash from different source (simulating config change)
+	lock3 := &LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"test-skill": {
+				Commit:     "fakecommit1234567890123456789012345678901234",
+				Path:       "skills/test", // path in lock still points to skills/test
+				SourceHash: computeSourceHash(source2), // but SourceHash is from skills/new-path
+			},
+		},
+	}
+	writeJSON(t, lockPath, lock3)
+	lock4, _ := readLock(lockPath)
+
+	// Second call — SourceHash mismatch should trigger reinstall
+	r2, ls2 := installOneSkill(
+		SkillEntry{Name: "test-skill", Target: "shared", Source: source2},
+		lock4,
+		[]DirEntry{{Name: "shared", Path: sharedDir}},
+	)
+	if r2.Action != "ok" {
+		t.Fatalf("expected install, got %+v", r2)
+	}
+	if ls2 == nil || ls2.SourceHash == "" {
+		t.Fatal("expected updated lock with SourceHash")
+	}
+}
+
+// ── add + remove end-to-end ──────────────────────────────────────────
+
+func TestCmdAdd_Remove_NoResidue(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	claudeDir := filepath.Join(dir, "claude")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+			{Name: "claude", Path: claudeDir},
+		},
+		Mirrors: []MirrorEntry{
+			{From: "shared", To: "claude"},
+		},
+		Skills: []SkillEntry{},
+	})
+
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath := getLockPath(manifestPath)
+	lock, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fakeGitHub()
+	defer restoreGitHub()
+
+	// Add a skill
+	opts := addOptions{
+		Repo:   "user/repo",
+		Path:   "skills/test",
+		Ref:    "main",
+		Target: "shared",
+	}
+
+	oldQ := quiet
+	quiet = true
+	cmdAdd(m, lock, manifestPath, opts, false)
+	quiet = oldQ
+
+	// Verify it was added
+	if len(m.Skills) != 1 {
+		t.Fatal("skill was not added")
+	}
+
+	// Re-read
+	m, _ = readManifest(manifestPath)
+	lock, _ = readLock(lockPath)
+
+	// Now remove it
+	quiet = true
+	cmdRemove(m, lock, manifestPath, []string{"test"}, false, false)
+	quiet = oldQ
+
+	// Manifest should be empty
+	m3, _ := readManifest(manifestPath)
+	if len(m3.Skills) != 0 {
+		t.Fatal("remove did not clear manifest")
+	}
+
+	// Lock should be empty
+	lock3, _ := readLock(lockPath)
+	if len(lock3.Skills) != 0 {
+		t.Fatal("remove did not clear lock")
+	}
+
+	// Disk should be gone
+	if _, err := os.Stat(filepath.Join(sharedDir, "test", "SKILL.md")); err == nil {
+		t.Fatal("disk skill directory still exists")
+	}
+
+	// Mirror symlink should be gone
+	if _, err := os.Lstat(filepath.Join(claudeDir, "test")); err == nil {
+		t.Fatal("mirror symlink still exists")
+	}
+}
+
+// ── installSkillFiles unit test ──────────────────────────────────────
+
+func TestInstallSkillFiles_Success(t *testing.T) {
+	dir := t.TempDir()
+	destDir := filepath.Join(dir, "output")
+
+	fakeGitHub()
+	defer restoreGitHub()
+
+	// Create a skill that uses github-files type
+	skill := SkillEntry{
+		Name:   "test-files",
+		Target: "shared",
+		Source: SourceEntry{
+			Type:  "github-files",
+			Repo:  "user/repo",
+			Ref:   "main",
+			Path:  ".",
+			Files: map[string]string{
+				"SKILL.md":  "docs/guide/SKILL.md",
+				"README.md": "README.md",
+			},
+		},
+	}
+
+	result := InstallSkill(skill, destDir, "")
+	if result.Action == "failed" {
+		t.Fatalf("install failed: %s", result.Error)
+	}
+
+	// Verify SKILL.md and README.md exist
+	if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err != nil {
+		t.Fatalf("SKILL.md missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destDir, "README.md")); err != nil {
+		t.Fatalf("README.md missing: %v", err)
+	}
+
+	// Verify content — downloadFileFn returns "# " + basename
+	data, _ := os.ReadFile(filepath.Join(destDir, "SKILL.md"))
+	if string(data) != "# SKILL.md" {
+		t.Fatalf("unexpected content: %q", string(data))
+	}
+}
+
+func TestInstallSkillFiles_MissingSKILLMD(t *testing.T) {
+	dir := t.TempDir()
+	destDir := filepath.Join(dir, "output")
+
+	fakeGitHub()
+	defer restoreGitHub()
+
+	skill := SkillEntry{
+		Name:   "test-files",
+		Target: "shared",
+		Source: SourceEntry{
+			Type:  "github-files",
+			Repo:  "user/repo",
+			Ref:   "main",
+			Path:  ".",
+			Files: map[string]string{
+				"README.md": "README.md",
+			},
+		},
+	}
+
+	result := InstallSkill(skill, destDir, "")
+	if result.Action != "failed" {
+		t.Fatal("expected failure due to missing SKILL.md")
+	}
+}
+
+func TestInstallSkill_UnknownSourceType(t *testing.T) {
+	dir := t.TempDir()
+	destDir := filepath.Join(dir, "output")
+
+	skill := SkillEntry{
+		Name:   "test-unknown",
+		Target: "shared",
+		Source: SourceEntry{
+			Type:  "gitlab-dir",
+			Repo:  "user/repo",
+			Ref:   "main",
+			Path:  ".",
+		},
+	}
+
+	result := InstallSkill(skill, destDir, "")
+	if result.Action != "failed" || !strings.Contains(result.Error, "unknown source type") {
+		t.Fatalf("expected failure for unknown type, got %+v", result)
+	}
+}
+
+func TestSourceHash_EmptyLockFallback(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	skillDir := filepath.Join(sharedDir, "test-skill")
+
+	fakeGitHub()
+	defer restoreGitHub()
+
+	source := SourceEntry{Repo: "a/b", Ref: "main", Path: "skills/test"}
+
+	// Install once
+	InstallSkill(SkillEntry{Name: "test-skill", Target: "shared", Source: source}, skillDir, "")
+	// Remove commit marker to test the "no marker" fallback path for old locks
+	os.Remove(filepath.Join(skillDir, ".skills-commit"))
+
+	// Lock without SourceHash (old format)
+	lock := &LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"test-skill": {
+				Commit: "fakecommit1234567890123456789012345678901234",
+				Path:   "skills/test",
+				// no SourceHash — old lock format
+			},
+		},
+	}
+
+	// Should skip using old logic (no SourceHash check)
+	r, _ := installOneSkill(
+		SkillEntry{Name: "test-skill", Target: "shared", Source: source},
+		lock,
+		[]DirEntry{{Name: "shared", Path: sharedDir}},
+	)
+	if r.Action != "ok" || r.Error != "already installed" {
+		t.Fatalf("expected skip with old lock, got %+v", r)
+	}
+}

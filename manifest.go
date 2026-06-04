@@ -1,10 +1,13 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -142,8 +145,9 @@ type LockFile struct {
 }
 
 type LockSkill struct {
-	Commit string `json:"commit"`
-	Path   string `json:"path"`
+	Commit     string `json:"commit"`
+	Path       string `json:"path"`
+	SourceHash string `json:"sourceHash,omitempty"`
 }
 
 // ── path helpers ─────────────────────────────────────────────────────
@@ -267,4 +271,28 @@ func validateSkillName(name string) error {
 		return fmt.Errorf("skill name %q contains invalid characters", name)
 	}
 	return nil
+}
+
+// computeSourceHash computes a deterministic hash of a source entry configuration.
+// Used to detect changes in source configuration (type, path, files map).
+func computeSourceHash(src SourceEntry) string {
+	h := sha256.New()
+	h.Write([]byte(src.Type))
+	h.Write([]byte{0})
+	h.Write([]byte(src.Path))
+	h.Write([]byte{0})
+	if len(src.Files) > 0 {
+		keys := make([]string, 0, len(src.Files))
+		for k := range src.Files {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			h.Write([]byte(k))
+			h.Write([]byte{0})
+			h.Write([]byte(src.Files[k]))
+			h.Write([]byte{0})
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil)[:6])
 }

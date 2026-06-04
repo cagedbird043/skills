@@ -45,6 +45,111 @@ func bold(s string) string {
 	return "\033[1m" + s + "\033[0m"
 }
 
+// ── add command types ─────────────────────────────────────────────────
+
+type addOptions struct {
+	Repo      string
+	Path      string
+	Name      string
+	Ref       string
+	Target    string
+	FilesSpec string
+	NoInstall bool
+}
+
+func parseAddArgs(args []string) (addOptions, error) {
+	var o addOptions
+	o.Path = "."
+	o.Ref = "main"
+	o.Target = "shared"
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			if o.Repo == "" {
+				o.Repo = arg
+				continue
+			}
+			if o.Path == "." {
+				o.Path = arg
+				continue
+			}
+			return o, fmt.Errorf("unexpected argument %q", arg)
+		}
+
+		// Parse --flag or --flag=value
+		var name, val string
+		hasEq := strings.Contains(arg, "=")
+		if hasEq {
+			parts := strings.SplitN(arg, "=", 2)
+			name = parts[0]
+			val = parts[1]
+		} else {
+			name = arg
+		}
+
+		switch name {
+		case "--name":
+			if !hasEq {
+				i++
+				if i >= len(args) {
+					return o, fmt.Errorf("--name requires a value")
+				}
+				val = args[i]
+			}
+			o.Name = val
+		case "--ref":
+			if !hasEq {
+				i++
+				if i >= len(args) {
+					return o, fmt.Errorf("--ref requires a value")
+				}
+				val = args[i]
+			}
+			o.Ref = val
+		case "--target":
+			if !hasEq {
+				i++
+				if i >= len(args) {
+					return o, fmt.Errorf("--target requires a value")
+				}
+				val = args[i]
+			}
+			o.Target = val
+		case "--files":
+			if !hasEq {
+				i++
+				if i >= len(args) {
+					return o, fmt.Errorf("--files requires a value")
+				}
+				val = args[i]
+			}
+			o.FilesSpec = val
+		case "--no-install":
+			if hasEq && val != "" {
+				return o, fmt.Errorf("--no-install does not take a value")
+			}
+			o.NoInstall = true
+		default:
+			return o, fmt.Errorf("unknown flag %q", name)
+		}
+	}
+
+	if o.Repo == "" {
+		return o, fmt.Errorf("repository is required (owner/repo)")
+	}
+
+	// Validate repo format: owner/repo, no URL, no spaces, no ".."
+	parts := strings.Split(o.Repo, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" ||
+		strings.Contains(o.Repo, "..") || strings.Contains(o.Repo, " ") {
+		return o, fmt.Errorf("invalid repo format %q — expected owner/repo", o.Repo)
+	}
+
+	return o, nil
+}
+
+
 // ── CLI ──────────────────────────────────────────────────────────────
 
 func usage() {
@@ -55,6 +160,7 @@ func usage() {
 
 %s:
   list              List all skills with installation status
+  add <owner/repo>  Add a new skill from a GitHub repository
   install [name]    Install from lock (no remote check — fast)
   update            Check remote commits, update changed skills
   remove <name...>  Remove one or more skills from manifest, lock, disk, and mirrors
@@ -75,6 +181,12 @@ func usage() {
 
 %s:
   skills list
+  skills add cagedbird043/skills
+  skills add cagedbird043/skills skills/caveman
+  skills add cagedbird043/skills --name myname --ref develop
+  skills add cagedbird043/skills --files "SKILL.md=README.md"
+  skills add cagedbird043/skills --dry-run
+  skills add cagedbird043/skills --no-install
   skills install
   skills install drawio
   skills update
@@ -209,6 +321,17 @@ func main() {
 			target = positional[1]
 		}
 		cmdInstall(m, lock, manifestPath, target, dryRun)
+	case "add":
+		if len(positional) < 2 {
+			fmt.Fprintln(os.Stderr, "skills: add requires a repository (owner/repo)")
+			os.Exit(1)
+		}
+		opts, err := parseAddArgs(positional[1:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "skills: add: %v\n", err)
+			os.Exit(1)
+		}
+		cmdAdd(m, lock, manifestPath, opts, dryRun)
 	case "fmt":
 		cmdFmt(m, manifestPath, dryRun)
 	case "update":
@@ -278,6 +401,7 @@ func cmdCompletion(shell string) {
 _skills() {
   local -a cmds
   cmds=(
+    'add:add a new skill from a GitHub repository'
     'list:list all skills with status'
     'install:install from lock (fast, no remote check)'
     'update:audit and update skills'
@@ -325,7 +449,7 @@ _skills "$@"
       return
       ;;
   esac
-  COMPREPLY=($(compgen -W "list install update remove info fmt completion" -- "$cur"))
+  COMPREPLY=($(compgen -W "add list install update remove info fmt completion" -- "$cur"))
 }
 complete -F _skills skills
 `)
@@ -840,6 +964,164 @@ func cmdRemove(m *Manifest, lock *LockFile, manifestPath string, names []string,
 	applyMirrors(m)
 }
 
+
+// cmdAdd adds a new skill to the manifest and optionally installs it.
+// Transaction order: validate → dry-run check → fetch commit → install → write manifest → write lock → mirrors.
+func cmdAdd(m *Manifest, lock *LockFile, manifestPath string, opts addOptions, dryRun bool) {
+	// 1. Validate target exists
+	targetExists := false
+	for _, d := range m.Directories {
+		if d.Name == opts.Target {
+			targetExists = true
+			break
+		}
+	}
+	if !targetExists {
+		fail("target %q not found in manifest directories", opts.Target)
+		os.Exit(1)
+	}
+
+	// 2. Infer name
+	name := opts.Name
+	if name == "" {
+		if opts.Path != "" && opts.Path != "." {
+			name = strings.TrimRight(filepath.Base(opts.Path), "/")
+		} else {
+			name = strings.TrimSuffix(opts.Repo, ".git")
+			if idx := strings.LastIndex(name, "/"); idx >= 0 {
+				name = name[idx+1:]
+			}
+		}
+		// Reject filename-like names (e.g. "SKILL.md") unless --name was given
+		if strings.Contains(name, ".") {
+			fail("inferred name %q looks like a filename — use --name to set a proper skill name", name)
+			os.Exit(1)
+		}
+	}
+
+	if err := validateSkillName(name); err != nil {
+		fail("invalid skill name: %v", err)
+		os.Exit(1)
+	}
+
+	// Check duplicate
+	for _, s := range m.Skills {
+		if s.Name == name {
+			fail("skill %q already exists in manifest", name)
+			os.Exit(1)
+		}
+	}
+
+	// 3. Build candidate SkillEntry
+	sourceType := ""
+	files := make(map[string]string)
+
+	if opts.FilesSpec != "" {
+		sourceType = "github-files"
+		pairs := strings.Split(opts.FilesSpec, ",")
+		for _, pair := range pairs {
+			kv := strings.SplitN(pair, "=", 2)
+			if len(kv) != 2 || kv[0] == "" || kv[1] == "" {
+				fail("invalid --files entry %q (expected local=remote)", pair)
+				os.Exit(1)
+			}
+			if strings.Contains(kv[0], "..") || strings.HasPrefix(kv[0], "/") {
+				fail("invalid local path %q in --files", kv[0])
+				os.Exit(1)
+			}
+			if strings.Contains(kv[1], "..") || strings.HasPrefix(kv[1], "/") {
+				fail("invalid remote path %q in --files", kv[1])
+				os.Exit(1)
+			}
+			files[kv[0]] = kv[1]
+		}
+		// --files implies path must be "." or empty
+		if opts.Path != "." && opts.Path != "" {
+			fail("--files cannot be used with a path argument")
+			os.Exit(1)
+		}
+	}
+
+	entry := SkillEntry{
+		Name:   name,
+		Target: opts.Target,
+		Source: SourceEntry{
+			Type:  sourceType,
+			Repo:  opts.Repo,
+			Ref:   opts.Ref,
+			Path:  opts.Path,
+			Files: files,
+		},
+	}
+
+	// 4. --dry-run: preview without network or disk
+	if dryRun {
+		fmt.Println("[dry-run] Would add skill:")
+		fmt.Printf("  Name:   %s\n", name)
+		fmt.Printf("  Repo:   %s\n", opts.Repo)
+		fmt.Printf("  Ref:    %s\n", opts.Ref)
+		fmt.Printf("  Target: %s\n", opts.Target)
+		fmt.Printf("  Path:   %s\n", opts.Path)
+		if opts.FilesSpec != "" {
+			fmt.Printf("  Files:  %s\n", opts.FilesSpec)
+		}
+		fmt.Println("  (remote not checked)")
+		return
+	}
+
+	// 5. Fetch latest commit — fail before writing manifest
+	commit, err := fetchLatestCommitFn(opts.Repo, opts.Ref)
+	if err != nil {
+		msg := fmt.Sprintf("check commit: %v", err)
+		if isRateLimit(err) {
+			msg += " — set GITHUB_TOKEN or install gh for higher rate limits"
+		}
+		fail("%s", msg)
+		os.Exit(1)
+	}
+
+	// 6. Install (unless --no-install) — fail before writing manifest
+	installed := false
+	if !opts.NoInstall {
+		targetPath := resolveTargetPath(opts.Target, m.Directories)
+		if targetPath == "" {
+			fail("unknown target %q", opts.Target)
+			os.Exit(1)
+		}
+		destDir := filepath.Join(expandPath(targetPath), name)
+		result := InstallSkill(entry, destDir, "")
+		if result.Action == "failed" {
+			fail("install %s: %s", name, result.Error)
+			os.Exit(1)
+		}
+		installed = true
+	}
+
+	// 7. Append to manifest and write
+	m.Skills = append(m.Skills, entry)
+	if err := writeManifest(manifestPath, m); err != nil {
+		fail("write manifest: %v", err)
+		os.Exit(1)
+	}
+
+	// 8. Write lock entry
+	if installed {
+		lock.Skills[name] = LockSkill{
+			Commit:     commit,
+			Path:       opts.Path,
+			SourceHash: computeSourceHash(entry.Source),
+		}
+		if err := writeLock(getLockPath(manifestPath), lock); err != nil {
+			warn("write lock: %v", err)
+		}
+	}
+
+	// 9. Symlinks and mirrors
+	applySymlinks(m)
+	applyMirrors(m)
+
+	ok("added %s", name)
+}
 
 // cmdFmt reformats the manifest to canonical form.
 // With --dry-run, shows a unified diff instead of writing.
