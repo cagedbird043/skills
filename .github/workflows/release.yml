@@ -98,6 +98,7 @@ jobs:
 
           gh repo clone cagedbird043/homebrew-tap
           cd homebrew-tap
+          gh auth setup-git
           python3 "$GITHUB_WORKSPACE/skills-repo/.github/scripts/update-homebrew-formula.py" \
             Formula/skills-cli.rb "$VERSION" \
             "${{ steps.shas.outputs.linux }}" \
