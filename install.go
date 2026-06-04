@@ -459,20 +459,23 @@ func runParallel(m *Manifest, lock *LockFile, manifestPath string, fn func(Skill
 	}()
 
 	var allResults []InstallResult
+	changed := false
 	for r := range results {
 		if r.lockUpdate != nil {
 			lock.Skills[r.name] = *r.lockUpdate
+			changed = true
 		}
 		allResults = append(allResults, r.InstallResult)
 	}
 
-	// Apply manifest symlinks + mirror shared skills to agent namespaces
 	applySymlinks(m)
 	applyMirrors(m)
 
-	lock.Updated = time.Now().Format(time.RFC3339)
-	if err := writeLock(getLockPath(manifestPath), lock); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: write lock: %v\n", err)
+	if changed {
+		lock.Updated = time.Now().Format(time.RFC3339)
+		if err := writeLock(getLockPath(manifestPath), lock); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: write lock: %v\n", err)
+		}
 	}
 
 	return allResults

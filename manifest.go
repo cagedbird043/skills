@@ -85,9 +85,11 @@ func (s SkillEntry) MarshalJSON() ([]byte, error) {
 }
 
 type SourceEntry struct {
-	Repo  string `json:"repo"`
-	Ref   string `json:"ref"`
-	Path  string `json:"path"`
+	Type  string            `json:"type,omitempty"`
+	Files map[string]string `json:"files,omitempty"`
+	Repo  string            `json:"repo"`
+	Ref   string            `json:"ref"`
+	Path  string            `json:"path,omitempty"`
 	extra map[string]json.RawMessage
 }
 func (s *SourceEntry) UnmarshalJSON(data []byte) error {
@@ -101,7 +103,7 @@ func (s *SourceEntry) UnmarshalJSON(data []byte) error {
 	}
 	for k, v := range raw {
 		switch k {
-		case "repo", "ref", "path":
+		case "type", "files", "repo", "ref", "path":
 			continue
 		default:
 			if s.extra == nil {
