@@ -318,6 +318,14 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 		}
 	}
 	cleanupTmp = false // tmpDir was moved to destDir
+
+	// Write commit marker so installOneSkill can detect stale disk after lock push
+	refUsed := ref
+	if refOverride != "" {
+		refUsed = refOverride
+	}
+	os.WriteFile(filepath.Join(destDir, ".skills-commit"), []byte(refUsed+"\n"), 0644)
+
 	r.Action = "ok"
 	return r
 }
@@ -352,7 +360,17 @@ func installOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (Install
 			}
 		} else {
 			if ls.Path == skill.Source.Path && diskExists {
-				return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
+				// Check commit marker on disk vs lock — detect stale disk
+				commitFile := filepath.Join(destDir, ".skills-commit")
+				if data, err := os.ReadFile(commitFile); err == nil {
+					if strings.TrimSpace(string(data)) == ls.Commit {
+						return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
+					}
+					// Commit mismatch: fall through to reinstall with locked commit
+				} else {
+					// No marker (legacy install from older version), skip
+					return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
+				}
 			}
 
 			// Trust the locked commit for install: if the manifest path changed or
