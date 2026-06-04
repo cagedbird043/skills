@@ -1,117 +1,38 @@
-# skills — Agent Maintenance Guide
+# skills — 开发与测试 SOP
 
-## Overview
-
-Zero-dependency Go CLI that installs agent skills from GitHub subdirectories.
-Reads a `.manifest.json`, downloads files via the GitHub Trees + Contents API,
-and writes a `.lock.json` to pin installed versions.
-
-## Architecture
-
-```
-main.go        — CLI entry, flag parsing, command dispatch
-manifest.go    — Manifest/LockFile types, JSON I/O, path helpers
-install.go     — GitHub API client, tree traversal, parallel installer
-```
-
-## Key commands
-
-```
-skills list              → cmdList()
-skills install           → cmdInstall() → InstallAll() → parallel workers
-skills install <name>    → cmdInstall() → processOneSkill()
-skills verify            → cmdVerify()
-skills info <name>       → cmdInfo()
-skills completion zsh    → cmdCompletion()
-```
-
-## Data flow
-
-1. `readManifest()` — parse `.manifest.json`
-2. `readLock()` — parse `.lock.json` (or empty if absent)
-3. For each skill:
-   - `fetchLatestCommit()` — GET /repos/{repo}/commits/{ref}
-   - Compare with lock → skip if unchanged and `SKILL.md` exists on disk
-   - `fetchTree()` — GET /repos/{repo}/git/trees/{ref}?recursive=1
-   - Filter entries under source.path
-   - `downloadFile()` — GET /repos/{repo}/contents/{path}  (handles symlinks via `download_url`)
-4. `writeLock()` — persist `.lock.json`
-
-## Parallelism
-
-`InstallAll()` uses a worker pool of 4 goroutines. Each worker processes one
-skill independently. Results are collected via channels.
-
-## Symlink handling
-
-`downloadFile()` handles GitHub symlinks (mode `120000` in the tree API).
-When the Contents API returns `"type": "symlink"`, it falls back to the
-`download_url` field instead of base64-decoding.
-
-## Rate limiting
-
-The GitHub API is rate-limited to 60 requests/hour without authentication.
-The tool automatically uses `gh auth token` or `GITHUB_TOKEN` when available.
-With a token: 5000 requests/hour.
-
-## Built-in files
-
-| File | Purpose |
-|------|---------|
-| `go.mod` | Go module definition |
-| `main.go` | CLI entry, flag parsing, all commands |
-| `manifest.go` | Manifest/LockFile types, JSON I/O |
-| `install.go` | GitHub API client, tree traversal, parallel installer |
-| `Makefile` | build / install / clean targets |
-| `README.md` | User documentation |
-| `AGENTS.md` | This file |
-| `install.sh` | curl-pipe install script |
-
-## Manifest format
-
-```json
-{
-  "version": 1,
-  "directories": [
-    { "name": "shared", "path": "~/.agents/skills" }
-  ],
-  "symlinks": [
-    { "from": "~/.claude/skills", "to": "~/.agents/skills" }
-  ],
-  "skills": [
-    {
-      "name": "drawio",
-      "target": "shared",
-      "source": {
-        "repo": "github/awesome-copilot",
-        "ref": "main",
-        "path": "plugins/project-documenter/skills/drawio"
-      }
-    }
-  ]
-}
-```
-
-## Lock format
-
-```json
-{
-  "version": 1,
-  "updated_at": "2026-05-30T03:00:00+08:00",
-  "skills": {
-    "drawio": {
-      "commit": "9b74459b...",
-      "path": "plugins/project-documenter/skills/drawio"
-    }
-  }
-}
-```
-
-## Testing
+## 本地测试
 
 ```bash
-go build -o skills .
-./skills --manifest ./testdata/manifest.json list
-./skills --manifest ./testdata/manifest.json install
-./skills --manifest ./testdata/manifest.json verify
+go vet ./...
+go test -race -count=1 ./...
 ```
+
+测试覆盖 `install.go`、`manifest.go`、`main.go`。不要 mock，走真实文件系统。
+
+## 对 dotfiles 回归
+
+dotfiles 是主要测试目标。每次改完行为必须：
+
+```bash
+git -C ~/.dotfiles checkout -- .       # 恢复到干净状态
+go build -o /tmp/skills-dev .          # 本地编译
+/tmp/skills-dev install -q             # 安装所有技能
+git -C ~/.dotfiles diff                # 只应有实际变更，不能有格式噪音
+/tmp/skills-dev fmt -q                 # 格式化，幂等
+/tmp/skills-dev remove --dry-run xxx   # dry-run 不应写任何文件
+```
+
+只用 `git checkout` 恢复 dotfiles，禁止手动重写被 skills 改过的文件。
+
+## 发布流程
+
+1. `git commit` + `git tag vX.Y.Z` + `git push --tags`
+2. 等 Release workflow 完成（含 update-homebrew）
+3. `brew update && brew upgrade skills-cli` 两端
+4. `ssh mac "brew update && brew upgrade skills-cli"`
+
+## CI 注意事项
+
+- `update-homebrew` 依赖 `GH_TOKEN` 环境变量推送到 homebrew-tap。格式：`gh repo clone` + `gh auth setup-git` + `git push`
+- Python 脚本 `update-homebrew-formula.py` 用正则修改 formula，注意缩进和匹配模式
+- 不要为了修 CI 错误刷版本号。amend 或删 tag 重打
