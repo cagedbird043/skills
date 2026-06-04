@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -56,7 +58,8 @@ func usage() {
   list              List all skills with installation status
   install [name]    Install from lock (no remote check — fast)
   update            Check remote commits, update changed skills
-  remove <name...>   Remove one or more skills from manifest, lock, disk, and mirrors
+  remove <name...>  Remove one or more skills from manifest, lock, disk, and mirrors
+  fmt               Format manifest to canonical form
   info <name>       Show details about a specific skill
   completion <shell> Generate shell completion (zsh, bash)
 
@@ -80,6 +83,9 @@ func usage() {
   skills remove drawio docx pdf
   skills remove drawio --keep-manifest
   skills remove drawio --dry-run
+  skills install --dry-run
+  skills fmt
+  skills fmt --dry-run
   skills info drawio
   skills completion zsh > ~/.local/share/zsh/site-functions/_skills
 `, bold("skills"), version,
@@ -213,7 +219,9 @@ func main() {
 		if len(positional) > 1 {
 			target = positional[1]
 		}
-		cmdInstall(m, lock, manifestPath, target)
+		cmdInstall(m, lock, manifestPath, target, dryRun)
+	case "fmt":
+		cmdFmt(m, manifestPath, dryRun)
 	case "update":
 		target := ""
 		if len(positional) > 1 {
@@ -398,7 +406,8 @@ func printSummary(results []InstallResult) {
 }
 
 // cmdInstall trusts the lock file — no remote commit checks.
-func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string) {
+// With --dry-run, shows what would be installed without touching disk.
+func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string, dryRun bool) {
 	if target != "" {
 		if err := validateSkillName(target); err != nil {
 			fail("%v", err)
@@ -416,14 +425,17 @@ func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string) {
 			os.Exit(1)
 		}
 
-		// Reuse the same logic as bulk install
+		if dryRun {
+			fmt.Printf("  %s %s (from %s/%s @ %s)\n", bold("install"), found.Name, found.Source.Repo, found.Source.Path, found.Source.Ref)
+			return
+		}
+
 		r, ls := installOneSkill(*found, lock, m.Directories)
 		if ls != nil {
 			lock.Skills[found.Name] = *ls
 			lock.Updated = time.Now().Format(time.RFC3339)
 			writeLock(getLockPath(manifestPath), lock)
 		}
-		// Apply symlinks + mirrors for single install too
 		applySymlinks(m)
 		applyMirrors(m)
 		if r.Action == "ok" {
@@ -431,6 +443,11 @@ func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string) {
 		} else {
 			fail("%s: %s", found.Name, r.Error)
 		}
+		return
+	}
+
+	if dryRun {
+		fmt.Printf("  %s all skills from lock\n", bold("install"))
 		return
 	}
 
@@ -837,6 +854,71 @@ func cmdRemove(m *Manifest, lock *LockFile, manifestPath string, names []string,
 	applyMirrors(m)
 }
 
+
+// cmdFmt reformats the manifest to canonical form.
+// With --dry-run, shows a unified diff instead of writing.
+func cmdFmt(m *Manifest, manifestPath string, dryRun bool) {
+	orig, err := os.ReadFile(manifestPath)
+	if err != nil {
+		fail("read manifest: %v", err)
+		os.Exit(1)
+	}
+
+	canonical, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		fail("marshal manifest: %v", err)
+		os.Exit(1)
+	}
+	canonical = append(canonical, '\n')
+
+	if bytes.Equal(orig, canonical) {
+		ok("manifest is already canonical")
+		return
+	}
+
+	if dryRun {
+		fmt.Println(dim("--- current"))
+		fmt.Println(bold("+++ canonical"))
+		origLines := strings.Split(string(orig), "\n")
+		canonLines := strings.Split(string(canonical), "\n")
+		maxLen := len(origLines)
+		if len(canonLines) > maxLen {
+			maxLen = len(canonLines)
+		}
+		i, j := 0, 0
+		for i < maxLen || j < maxLen {
+			var origLine, canonLine string
+			if i < len(origLines) {
+				origLine = origLines[i]
+			}
+			if j < len(canonLines) {
+				canonLine = canonLines[j]
+			}
+			if origLine == canonLine {
+				if origLine != "" || i < len(origLines) || j < len(canonLines) {
+					fmt.Printf("  %s\n", dim(origLine))
+				}
+				i++
+				j++
+			} else {
+				if origLine != "" {
+					fmt.Printf("%s %s\n", red("-"), red(origLine))
+				}
+				if canonLine != "" {
+					fmt.Printf("%s %s\n", green("+"), green(canonLine))
+				}
+				i++
+				j++
+			}
+		}
+	} else {
+		if err := atomicWriteFile(manifestPath, canonical, 0644); err != nil {
+			fail("write manifest: %v", err)
+			os.Exit(1)
+		}
+		ok("manifest formatted")
+	}
+}
 func cmdInfo(m *Manifest, lock *LockFile, name string) {
 	var found *SkillEntry
 	for _, s := range m.Skills {

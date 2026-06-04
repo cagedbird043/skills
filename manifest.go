@@ -16,11 +16,12 @@ type MirrorEntry struct {
 }
 
 type Manifest struct {
-	Version    int              `json:"version"`
-	Directories []DirEntry      `json:"directories"`
-	Symlinks   []SymlinkEntry   `json:"symlinks,omitempty"`
-	Mirrors    []MirrorEntry    `json:"mirrors,omitempty"`
-	Skills     []SkillEntry     `json:"skills"`
+	Version     int            `json:"version"`
+	Comment     string         `json:"comment,omitempty"`
+	Directories []DirEntry     `json:"directories"`
+	Symlinks    []SymlinkEntry `json:"symlinks,omitempty"`
+	Mirrors     []MirrorEntry  `json:"mirrors,omitempty"`
+	Skills      []SkillEntry   `json:"skills"`
 }
 
 type DirEntry struct {
@@ -205,11 +206,14 @@ func readManifest(path string) (*Manifest, error) {
 	return &m, nil
 }
 
+// writeManifest serializes the manifest with deterministic formatting.
+// Output is idempotent: writing the same data twice produces identical bytes.
 func writeManifest(path string, m *Manifest) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode manifest: %w", err)
 	}
+	data = append(data, '\n')
 	return atomicWriteFile(path, data, 0644)
 }
 

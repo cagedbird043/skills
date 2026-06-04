@@ -1291,7 +1291,7 @@ func TestCmdInstall_BulkWithMultipleSkills(t *testing.T) {
 
 	oldQ := quiet
 	quiet = true
-	cmdInstall(m, lock, manifestPath, "")
+	cmdInstall(m, lock, manifestPath, "", false)
 	quiet = oldQ
 
 	// Both should be on disk
