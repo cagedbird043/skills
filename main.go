@@ -286,6 +286,7 @@ func cmdCompletion(shell string) {
 	case "zsh":
 		fmt.Print(`#compdef skills
 
+_skills() {
   local -a cmds
   cmds=(
     'list:list all skills with status'
@@ -293,6 +294,7 @@ func cmdCompletion(shell string) {
     'update:audit and update skills'
     'remove:remove a skill from manifest and disk'
     'info:show skill details'
+    'fmt:format manifest to canonical form'
     'completion:generate shell completion'
   )
   _describe -t commands 'skills command' cmds
@@ -334,7 +336,7 @@ _skills "$@"
       return
       ;;
   esac
-  COMPREPLY=($(compgen -W "list install update remove info completion" -- "$cur"))
+  COMPREPLY=($(compgen -W "list install update remove info fmt completion" -- "$cur"))
 }
 complete -F _skills skills
 `)
