@@ -471,26 +471,30 @@ func runParallel(m *Manifest, lock *LockFile, manifestPath string, fn func(Skill
 	}
 	close(jobs)
 
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
+
+	wg.Wait()
+	close(results)
 
 	var allResults []InstallResult
-	changed := false
+	var lockUpdates []jobResult
 	for r := range results {
 		if r.lockUpdate != nil {
-			old, hadOld := lock.Skills[r.name]
-			if !hadOld || old.Commit != r.lockUpdate.Commit || old.Path != r.lockUpdate.Path {
-				lock.Skills[r.name] = *r.lockUpdate
-				changed = true
-			}
+			lockUpdates = append(lockUpdates, r)
 		}
 		allResults = append(allResults, r.InstallResult)
 	}
 
 	applySymlinks(m)
 	applyMirrors(m)
+
+	changed := false
+	for _, r := range lockUpdates {
+		old, hadOld := lock.Skills[r.name]
+		if !hadOld || old.Commit != r.lockUpdate.Commit || old.Path != r.lockUpdate.Path {
+			lock.Skills[r.name] = *r.lockUpdate
+			changed = true
+		}
+	}
 
 	if changed {
 		if err := writeLock(getLockPath(manifestPath), lock); err != nil {

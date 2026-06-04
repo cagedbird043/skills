@@ -170,10 +170,21 @@ func resolveTargetPath(dirName string, dirs []DirEntry) string {
 // atomicWriteFile writes data to path atomically by writing to a temp file
 // in the same directory (same filesystem) and renaming.
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
+	// Resolve symlinks so writes land on the real file, not the symlink
+	realPath := path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		realPath = resolved
+	} else if !os.IsNotExist(err) {
+		// Symlink exists but can't resolve — try resolving parent dir
+		if dir, err2 := filepath.EvalSymlinks(filepath.Dir(path)); err2 == nil {
+			realPath = filepath.Join(dir, filepath.Base(path))
+		}
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".tmp-"+filepath.Base(path))
+
+	if err := os.MkdirAll(filepath.Dir(realPath), 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(realPath), err)
+	}
+	f, err := os.CreateTemp(filepath.Dir(realPath), ".tmp-"+filepath.Base(realPath))
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
@@ -189,7 +200,7 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("chmod temp: %w", err)
 	}
 	f.Close()
-	return os.Rename(tmpName, path)
+	return os.Rename(tmpName, realPath)
 }
 
 func readManifest(path string) (*Manifest, error) {
