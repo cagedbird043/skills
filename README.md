@@ -24,9 +24,9 @@ flowchart LR
     MR[Derived symlinks:<br/>shared→claude<br/>shared→opencode]
   end
 
-  Manifest -->|skills install| Lock
+  Manifest -->|skills sync| Lock
   Lock -->|download| Disk
-  Manifest -->|install/update| Mirrors
+  Manifest -->|sync/update| Mirrors
   Disk -.->|verify| Mirrors
 
   style Manifest fill:#1a1a2e,stroke:#e94560
@@ -76,11 +76,11 @@ make install
 # List all skills defined in the manifest
 skills list
 
-# Install all skills
-skills install
+# Reconcile all skills to disk
+skills sync
 
-# Install a single skill
-skills install drawio
+# Reconcile a single skill to disk
+skills sync drawio
 
 # Check skill directory integrity
 skills verify
@@ -121,7 +121,7 @@ A complete example lives at [`examples/manifest.json`](examples/manifest.json):
 }
 ```
 
-Run `skills install`. A `.lock.json` will be created next to your manifest
+Run `skills sync`. A `.lock.json` will be created next to your manifest
 recording the exact commit of each installed skill.
 
 | Field | Description |
@@ -139,7 +139,8 @@ recording the exact commit of each installed skill.
 | Command | Description |
 |---------|-------------|
 | `skills list` | List all skills with installation status |
-| `skills install [name]` | Install from lock (zero API calls if locked) |
+| `skills sync [name]` | Reconcile manifest + lock to disk (zero API calls if locked) |
+| `skills install [name]` | Legacy alias for `sync` |
 | `skills update [name]` | Check remote commits, update changed skills |
 | `skills verify` | Check all skill directories exist on disk |
 | `skills info <name>` | Show source, path, commit, and disk location |

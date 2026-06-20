@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -2643,4 +2645,340 @@ func FuzzComputeSourceHashDeterminism(f *testing.F) {
 			t.Errorf("computeSourceHash not deterministic: %s != %s", h1, h2)
 		}
 	})
+}
+
+// ── Move, Sync, and Add-conflict Redesign Tests ───────────────────────
+
+func TestCmdMove_MovesSkillAndReconcilesFiles(t *testing.T) {
+	dir := t.TempDir()
+	codexDir := filepath.Join(dir, "codex")
+	sharedDir := filepath.Join(dir, "shared")
+	claudeDir := filepath.Join(dir, "claude")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+
+	os.MkdirAll(codexDir, 0o755)
+	os.MkdirAll(sharedDir, 0o755)
+	os.MkdirAll(claudeDir, 0o755)
+
+	oldDestDir := filepath.Join(codexDir, "caveman")
+	os.MkdirAll(oldDestDir, 0o755)
+	writeFile(t, filepath.Join(oldDestDir, "SKILL.md"), "# caveman")
+	writeFile(t, filepath.Join(oldDestDir, ".skills-commit"), "fakecommit123")
+
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "codex", Path: codexDir},
+			{Name: "shared", Path: sharedDir},
+			{Name: "claude", Path: claudeDir},
+		},
+		Mirrors: []MirrorEntry{
+			{From: "shared", To: "claude"},
+		},
+		Skills: []SkillEntry{
+			{
+				Name:   "caveman",
+				Target: "codex",
+				Source: SourceEntry{
+					Repo: "cagedbird/caveman",
+					Ref:  "main",
+					Path: "skills/caveman",
+					Files: map[string]string{
+						"SKILL.md": "README.md",
+					},
+				},
+				Note: "caveman note",
+			},
+		},
+	})
+
+	lockPath := getLockPath(manifestPath)
+	writeJSON(t, lockPath, LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"caveman": {
+				Commit:     "fakecommit123",
+				Path:       "skills/caveman",
+				SourceHash: "fakehash123",
+			},
+		},
+	})
+
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oldQ := quiet
+	quiet = true
+	cmdMove(m, lock, manifestPath, "caveman", "shared", false)
+	quiet = oldQ
+
+	// Verify manifest target was updated to shared
+	m2, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m2.Skills) != 1 || m2.Skills[0].Target != "shared" {
+		t.Fatalf("expected target 'shared', got: %+v", m2.Skills)
+	}
+
+	// Verify metadata preserved
+	if m2.Skills[0].Source.Repo != "cagedbird/caveman" || m2.Skills[0].Source.Path != "skills/caveman" {
+		t.Fatalf("source metadata lost: %+v", m2.Skills[0].Source)
+	}
+
+	// Verify lock entry preserved
+	lock2, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lock2.Skills["caveman"].Commit != "fakecommit123" {
+		t.Fatalf("lock entry lost/corrupted: %+v", lock2.Skills)
+	}
+
+	// Verify old path is gone
+	if _, err := os.Stat(oldDestDir); err == nil {
+		t.Fatalf("old destination directory %s still exists", oldDestDir)
+	}
+
+	// Verify new path exists and has files
+	newDestDir := filepath.Join(sharedDir, "caveman")
+	if _, err := os.Stat(filepath.Join(newDestDir, "SKILL.md")); err != nil {
+		t.Fatalf("moved skill missing SKILL.md under %s: %v", newDestDir, err)
+	}
+
+	// Verify mirror symlink created in claude targeting shared/caveman
+	mirrorLink := filepath.Join(claudeDir, "caveman")
+	target, err := os.Readlink(mirrorLink)
+	if err != nil {
+		t.Fatalf("mirror symlink missing: %v", err)
+	}
+	if filepath.Clean(target) != filepath.Clean(newDestDir) {
+		t.Fatalf("mirror symlink points to wrong destination: expected %s, got %s", newDestDir, target)
+	}
+}
+
+func TestCmdMove_DryRun(t *testing.T) {
+	dir := t.TempDir()
+	codexDir := filepath.Join(dir, "codex")
+	sharedDir := filepath.Join(dir, "shared")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+
+	os.MkdirAll(codexDir, 0o755)
+	os.MkdirAll(sharedDir, 0o755)
+
+	oldDestDir := filepath.Join(codexDir, "caveman")
+	os.MkdirAll(oldDestDir, 0o755)
+	writeFile(t, filepath.Join(oldDestDir, "SKILL.md"), "# caveman")
+
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "codex", Path: codexDir},
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{
+			{
+				Name:   "caveman",
+				Target: "codex",
+				Source: SourceEntry{Repo: "cagedbird/caveman", Ref: "main", Path: "skills/caveman"},
+			},
+		},
+	})
+	lockPath := getLockPath(manifestPath)
+	writeJSON(t, lockPath, LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"caveman": {Commit: "fakecommit123", Path: "skills/caveman"},
+		},
+	})
+
+	m, _ := readManifest(manifestPath)
+	lock, _ := readLock(lockPath)
+
+	oldQ := quiet
+	quiet = true
+	cmdMove(m, lock, manifestPath, "caveman", "shared", true)
+	quiet = oldQ
+
+	// Manifest target should STILL be codex
+	m2, _ := readManifest(manifestPath)
+	if m2.Skills[0].Target != "codex" {
+		t.Fatalf("dry-run mutated manifest target: got %s, want codex", m2.Skills[0].Target)
+	}
+
+	// Directory should STILL be in codexDir and NOT in sharedDir
+	if _, err := os.Stat(filepath.Join(codexDir, "caveman", "SKILL.md")); err != nil {
+		t.Fatalf("dry-run removed source directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sharedDir, "caveman")); err == nil {
+		t.Fatalf("dry-run created destination directory")
+	}
+}
+
+func TestCmdMove_SkillNotFound_Fails(t *testing.T) {
+	if os.Getenv("BE_CRASHER") == "1" {
+		dir := t.TempDir()
+		manifestPath := filepath.Join(dir, ".manifest.json")
+		writeJSON(t, manifestPath, Manifest{
+			Version: 1,
+			Directories: []DirEntry{
+				{Name: "shared", Path: filepath.Join(dir, "shared")},
+			},
+			Skills: []SkillEntry{},
+		})
+		m, _ := readManifest(manifestPath)
+		lock, _ := readLock(getLockPath(manifestPath))
+		cmdMove(m, lock, manifestPath, "nonexistent", "shared", false)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestCmdMove_SkillNotFound_Fails")
+	cmd.Env = append(os.Environ(), "BE_CRASHER=1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		t.Fatalf("process ran successfully, want exit status 1")
+	}
+	output := stderr.String()
+	if !strings.Contains(output, `skill "nonexistent" not found in manifest`) {
+		t.Fatalf("expected error message about skill not found, got: %q", output)
+	}
+}
+
+func TestCmdMove_TargetNotFound_Fails(t *testing.T) {
+	if os.Getenv("BE_CRASHER") == "1" {
+		dir := t.TempDir()
+		manifestPath := filepath.Join(dir, ".manifest.json")
+		writeJSON(t, manifestPath, Manifest{
+			Version: 1,
+			Directories: []DirEntry{
+				{Name: "codex", Path: filepath.Join(dir, "codex")},
+			},
+			Skills: []SkillEntry{
+				{Name: "caveman", Target: "codex"},
+			},
+		})
+		m, _ := readManifest(manifestPath)
+		lock, _ := readLock(getLockPath(manifestPath))
+		cmdMove(m, lock, manifestPath, "caveman", "shared", false)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestCmdMove_TargetNotFound_Fails")
+	cmd.Env = append(os.Environ(), "BE_CRASHER=1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		t.Fatalf("process ran successfully, want exit status 1")
+	}
+	output := stderr.String()
+	if !strings.Contains(output, `target "shared" not found in manifest directories`) {
+		t.Fatalf("expected error message about target not found, got: %q", output)
+	}
+}
+
+func TestCmdSyncAndInstallCompatibility(t *testing.T) {
+	fakeGitHub()
+	defer restoreGitHub()
+
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+		},
+		Skills: []SkillEntry{
+			{
+				Name: "caveman", Target: "shared",
+				Source: SourceEntry{Repo: "cagedbird/caveman", Ref: "main", Path: "skills/test"},
+			},
+		},
+	})
+	lockPath := getLockPath(manifestPath)
+	writeJSON(t, lockPath, LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"caveman": {Commit: "fakecommit1234567890123456789012345678901234", Path: "skills/test"},
+		},
+	})
+
+	m, _ := readManifest(manifestPath)
+	lock, _ := readLock(lockPath)
+
+	oldQ := quiet
+	quiet = true
+	// Verify cmdSync with "sync" verb works
+	cmdSync("sync", m, lock, manifestPath, "", false)
+	quiet = oldQ
+
+	// Verify skill installed to disk
+	if _, err := os.Stat(filepath.Join(sharedDir, "caveman", "SKILL.md")); err != nil {
+		t.Fatalf("cmdSync did not install skill: %v", err)
+	}
+
+	// Clean up disk
+	os.RemoveAll(sharedDir)
+
+	// Verify cmdSync with "install" verb works
+	oldQ = quiet
+	quiet = true
+	cmdSync("install", m, lock, manifestPath, "", false)
+	quiet = oldQ
+
+	if _, err := os.Stat(filepath.Join(sharedDir, "caveman", "SKILL.md")); err != nil {
+		t.Fatalf("cmdSync as install did not install skill: %v", err)
+	}
+}
+
+func TestCmdAdd_DuplicateName_ConflictSuggestsMigration(t *testing.T) {
+	if os.Getenv("BE_CRASHER") == "1" {
+		dir := t.TempDir()
+		sharedDir := filepath.Join(dir, "skills")
+		manifestPath := filepath.Join(dir, ".manifest.json")
+		writeJSON(t, manifestPath, Manifest{
+			Version: 1,
+			Directories: []DirEntry{
+				{Name: "shared", Path: sharedDir},
+			},
+			Skills: []SkillEntry{
+				{Name: "caveman", Target: "shared"},
+			},
+		})
+		m, _ := readManifest(manifestPath)
+		lockPath := getLockPath(manifestPath)
+		lock, _ := readLock(lockPath)
+		opts := addOptions{
+			Repo:   "cagedbird/caveman",
+			Target: "shared",
+		}
+		cmdAdd(m, lock, manifestPath, opts, false)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestCmdAdd_DuplicateName_ConflictSuggestsMigration")
+	cmd.Env = append(os.Environ(), "BE_CRASHER=1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		t.Fatalf("process ran successfully, want exit status 1")
+	}
+
+	// Verify the stderr output has the migration suggestion
+	output := stderr.String()
+	expected := `use 'skills move caveman <target>' to retarget`
+	if !strings.Contains(output, expected) {
+		t.Fatalf("expected stderr to contain %q, got: %q", expected, output)
+	}
 }

@@ -172,13 +172,14 @@ func usage() {
 %s:
   list              List all skills with installation status
   add <owner/repo>  Add a new skill from a GitHub repository
-  install [name]    Install from lock (no remote check — fast)
+  sync [name]       Reconcile manifest + lock to disk + mirrors
+  install [name]    Alias for sync (legacy)
   update            Check remote commits, update changed skills
   remove <name...>  Remove one or more skills from manifest, lock, disk, and mirrors
+  move <name> <target> Move a skill to a different target directory
   fmt               Format manifest to canonical form
   info <name>       Show details about a specific skill
   completion <shell> Generate shell completion (zsh, bash)
-
 %s:
   -m, --manifest <path>  Path to manifest file
   -q, --quiet            Suppress normal output, show errors only
@@ -198,14 +199,15 @@ func usage() {
   skills add cagedbird043/skills --files "SKILL.md=README.md"
   skills add cagedbird043/skills --dry-run
   skills add cagedbird043/skills --no-install
-  skills install
-  skills install drawio
+  skills sync
+  skills sync drawio
   skills update
   skills remove drawio
   skills remove drawio docx pdf
   skills remove drawio --keep-manifest
   skills remove drawio --dry-run
-  skills install --dry-run
+  skills move caveman shared
+  skills sync --dry-run
   skills fmt
   skills fmt --dry-run
   skills info drawio
@@ -326,12 +328,12 @@ func main() {
 	switch subcmd {
 	case "list":
 		cmdList(m, lock)
-	case "install":
+	case "sync", "install":
 		target := ""
 		if len(positional) > 1 {
 			target = positional[1]
 		}
-		cmdInstall(m, lock, manifestPath, target, dryRun)
+		cmdSync(subcmd, m, lock, manifestPath, target, dryRun)
 	case "add":
 		if len(positional) < 2 {
 			fmt.Fprintln(os.Stderr, "skills: add requires a repository (owner/repo)")
@@ -351,6 +353,12 @@ func main() {
 			target = positional[1]
 		}
 		cmdUpdate(m, lock, manifestPath, target, dryRun, yes)
+	case "move", "retarget":
+		if len(positional) < 3 {
+			fmt.Fprintln(os.Stderr, "skills: move requires a skill name and a target directory")
+			os.Exit(1)
+		}
+		cmdMove(m, lock, manifestPath, positional[1], positional[2], dryRun)
 	case "remove":
 		if len(positional) < 2 {
 			fmt.Fprintln(os.Stderr, "skills: remove requires at least one skill name")
@@ -418,9 +426,11 @@ _skills() {
   cmds=(
     'add:add a new skill from a GitHub repository'
     'list:list all skills with status'
-    'install:install from lock (fast, no remote check)'
+    'sync:reconcile manifest + lock to disk (fast)'
+    'install:alias for sync (legacy)'
     'update:audit and update skills'
     'remove:remove a skill from manifest and disk'
+    'move:move a skill to a different target directory'
     'info:show skill details'
     'fmt:format manifest to canonical form'
     'completion:generate shell completion'
@@ -428,7 +438,7 @@ _skills() {
   _describe -t commands 'skills command' cmds
   # Positional: skill name completion for commands that take a skill argument
   case "$words[2]" in
-    remove|install|info|update)
+    remove|install|sync|info|update|move)
       if [[ $CURRENT -ge 3 ]]; then
         local -a skill_names
         skill_names=(${(f)"$(skills --complete-names 2>/dev/null)"})
@@ -458,13 +468,13 @@ _skills "$@"
   local cur prev words cword
   _init_completion || return
   case "$prev" in
-    remove|install|info|update)
+    remove|install|sync|info|update|move)
       [[ $cur != -* ]] || return 0
       COMPREPLY=($(compgen -W "$(skills --complete-names 2>/dev/null)" -- "$cur"))
       return
       ;;
   esac
-  COMPREPLY=($(compgen -W "add list install update remove info fmt completion" -- "$cur"))
+  COMPREPLY=($(compgen -W "add list sync install update remove move info fmt completion" -- "$cur"))
 }
 complete -F _skills skills
 `)
@@ -538,6 +548,11 @@ func printSummary(results []InstallResult) {
 // cmdInstall trusts the lock file — no remote commit checks.
 // With --dry-run, shows what would be installed without touching disk.
 func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string, dryRun bool) {
+	cmdSync("install", m, lock, manifestPath, target, dryRun)
+}
+
+// cmdSync reconciles manifest + lock to disk + mirrors.
+func cmdSync(cmdName string, m *Manifest, lock *LockFile, manifestPath, target string, dryRun bool) {
 	if target != "" {
 		if err := validateSkillName(target); err != nil {
 			fail("%v", err)
@@ -556,7 +571,7 @@ func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string, dryRun
 		}
 
 		if dryRun {
-			fmt.Printf("  %s %s (from %s/%s @ %s)\n", bold("install"), found.Name, found.Source.Repo, found.Source.Path, found.Source.Ref)
+			fmt.Printf("  %s %s (from %s/%s @ %s)\n", bold(cmdName), found.Name, found.Source.Repo, found.Source.Path, found.Source.Ref)
 			return
 		}
 
@@ -576,7 +591,7 @@ func cmdInstall(m *Manifest, lock *LockFile, manifestPath, target string, dryRun
 	}
 
 	if dryRun {
-		fmt.Printf("  %s all skills from lock\n", bold("install"))
+		fmt.Printf("  %s all skills from lock\n", bold(cmdName))
 		return
 	}
 
@@ -1032,7 +1047,7 @@ func cmdAdd(m *Manifest, lock *LockFile, manifestPath string, opts addOptions, d
 	// Check duplicate
 	for _, s := range m.Skills {
 		if s.Name == name {
-			fail("skill %q already exists in manifest", name)
+			fail("skill %q already exists in manifest (use 'skills move %s <target>' to retarget)", name, name)
 			os.Exit(1)
 		}
 	}
@@ -1251,4 +1266,99 @@ func cmdInfo(m *Manifest, lock *LockFile, name string) {
 	if ls, ok := lock.Skills[found.Name]; ok {
 		fmt.Printf("  %s: %s\n", bold("locked commit"), ls.Commit)
 	}
+}
+
+func cmdMove(m *Manifest, lock *LockFile, manifestPath string, name string, target string, dryRun bool) {
+	// 1. Find the skill in the manifest
+	skillIdx := -1
+	for i, s := range m.Skills {
+		if s.Name == name {
+			skillIdx = i
+			break
+		}
+	}
+	if skillIdx == -1 {
+		fail("skill %q not found in manifest", name)
+		os.Exit(1)
+	}
+
+	oldSkill := m.Skills[skillIdx]
+	oldTarget := oldSkill.Target
+
+	if oldTarget == target {
+		ok("skill %q is already targeting %q", name, target)
+		return
+	}
+
+	// 2. Validate the new target exists in directories
+	targetExists := false
+	for _, d := range m.Directories {
+		if d.Name == target {
+			targetExists = true
+			break
+		}
+	}
+	if !targetExists {
+		fail("target %q not found in manifest directories", target)
+		os.Exit(1)
+	}
+
+	// 3. Compute old and new paths
+	oldDestDir := ""
+	oldTargetPath := resolveTargetPath(oldTarget, m.Directories)
+	if oldTargetPath != "" {
+		oldDestDir = filepath.Join(expandPath(oldTargetPath), name)
+	}
+
+	newTargetPath := resolveTargetPath(target, m.Directories)
+	newDestDir := ""
+	if newTargetPath != "" {
+		newDestDir = filepath.Join(expandPath(newTargetPath), name)
+	}
+
+	if dryRun {
+		fmt.Printf("[dry-run] Would move skill %q from target %q to %q\n", name, oldTarget, target)
+		if oldDestDir != "" && newDestDir != "" {
+			fmt.Printf("[dry-run] Would move directory: %s -> %s\n", oldDestDir, newDestDir)
+		}
+		return
+	}
+
+	// Update target in manifest
+	m.Skills[skillIdx].Target = target
+
+	// Write manifest
+	if err := writeManifest(manifestPath, m); err != nil {
+		fail("write manifest: %v", err)
+		os.Exit(1)
+	}
+
+	// Reconcile disk
+	if oldDestDir != "" && newDestDir != "" {
+		// Check if old directory exists on disk
+		if _, err := os.Stat(oldDestDir); err == nil {
+			// Ensure new parent directory exists
+			if err := os.MkdirAll(filepath.Dir(newDestDir), 0o755); err != nil {
+				fail("create parent directory %s: %v", filepath.Dir(newDestDir), err)
+				os.Exit(1)
+			}
+			// If new destination already exists, we should delete it first to avoid rename error.
+			if _, err := os.Stat(newDestDir); err == nil {
+				if err := os.RemoveAll(newDestDir); err != nil {
+					fail("remove existing directory %s: %v", newDestDir, err)
+					os.Exit(1)
+				}
+			}
+			if err := os.Rename(oldDestDir, newDestDir); err != nil {
+				fail("move directory: %v", err)
+				os.Exit(1)
+			}
+		}
+	}
+
+	// Reapply symlinks and mirrors
+	applySymlinks(m)
+	applyMirrors(m)
+
+	ok("moved %s to %s", name, target)
 }
