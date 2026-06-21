@@ -85,8 +85,8 @@ skills sync drawio
 # Install OMP-only skill into the active profile's native user dir
 skills add DietrichGebert/ponytail skills/ponytail --target omp
 
-# Check skill directory integrity
-skills verify
+# Report manifest/lock/disk/mirror drift
+skills doctor
 
 # Show skill details
 skills info drawio
@@ -145,7 +145,7 @@ recording the exact commit of each installed skill.
 | `skills sync [name]` | Reconcile manifest + lock to disk (zero API calls if locked) |
 | `skills install [name]` | Legacy alias for `sync` |
 | `skills update [name]` | Check remote commits, update changed skills |
-| `skills verify` | Check all skill directories exist on disk |
+| `skills doctor` | Report active manifest path plus manifest/lock/disk/mirror drift |
 | `skills info <name>` | Show source, path, commit, and disk location |
 | `skills completion <shell>` | Generate shell completion (zsh, bash) |
 

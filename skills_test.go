@@ -74,6 +74,31 @@ func installFakeOMP(t *testing.T, agentDir string) {
 	t.Setenv("PATH", pathEnv)
 }
 
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	tmpf := filepath.Join(t.TempDir(), "stdout")
+	old := os.Stdout
+	f, err := os.Create(tmpf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = f
+	defer func() {
+		os.Stdout = old
+	}()
+
+	fn()
+
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := os.ReadFile(tmpf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
 // ── manifest / lock I/O ──────────────────────────────────────────────
 
 func TestReadManifest(t *testing.T) {
@@ -3061,5 +3086,128 @@ func TestCmdAdd_DuplicateName_ConflictSuggestsMigration(t *testing.T) {
 	expected := `use 'skills move caveman <target>' to retarget`
 	if !strings.Contains(output, expected) {
 		t.Fatalf("expected stderr to contain %q, got: %q", expected, output)
+	}
+}
+
+func TestCmdDoctor_ReportsCommonDriftStates(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	claudeDir := filepath.Join(dir, "claude")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+			{Name: "claude", Path: claudeDir},
+		},
+		Mirrors: []MirrorEntry{{From: "shared", To: "claude"}},
+		Skills: []SkillEntry{
+			{Name: "caveman", Target: "shared", Source: SourceEntry{Repo: "r/c", Ref: "main", Path: "skills/caveman"}},
+			{Name: "docx", Target: "shared", Source: SourceEntry{Repo: "r/d", Ref: "main", Path: "skills/docx"}},
+			{Name: "pdf", Target: "shared", Source: SourceEntry{Repo: "r/p", Ref: "main", Path: "skills/pdf"}},
+			{Name: "drawio", Target: "shared", Source: SourceEntry{Repo: "r/drawio", Ref: "main", Path: "skills/new-drawio"}},
+		},
+	})
+	writeJSON(t, getLockPath(manifestPath), LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"caveman": {Commit: "aaaaaaaaaaaaaaaa", Path: "skills/caveman"},
+			"pdf":     {Commit: "bbbbbbbbbbbbbbbb", Path: "skills/pdf"},
+			"drawio":  {Commit: "cccccccccccccccc", Path: "skills/old-drawio"},
+			"ghost":   {Commit: "dddddddddddddddd", Path: "skills/ghost"},
+		},
+	})
+
+	writeFile(t, filepath.Join(sharedDir, "caveman", "SKILL.md"), "# caveman\n")
+	writeFile(t, filepath.Join(sharedDir, "drawio", "SKILL.md"), "# drawio\n")
+	writeFile(t, filepath.Join(sharedDir, "orphan", "SKILL.md"), "# orphan\n")
+	writeFile(t, filepath.Join(claudeDir, "caveman", "SKILL.md"), "# not-a-symlink\n")
+
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := readLock(getLockPath(manifestPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdDoctor(m, lock, manifestPath)
+	})
+
+	for _, want := range []string{
+		manifestPath,
+		getLockPath(manifestPath),
+		"Doctor:",
+		"docx",
+		"uninstalled",
+		"pdf",
+		"missing",
+		"drawio",
+		"path-changed",
+		"ghost",
+		"stale",
+		"orphan",
+		"mirror-conflict",
+		"claude/caveman",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected doctor output to contain %q, got:\n%s", want, out)
+		}
+	}
+
+	lockAfter, err := readLock(getLockPath(manifestPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := lockAfter.Skills["ghost"]; !ok {
+		t.Fatalf("doctor must be read-only; stale lock entry was removed")
+	}
+}
+
+func TestCmdDoctor_CleanState(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	claudeDir := filepath.Join(dir, "claude")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+			{Name: "claude", Path: claudeDir},
+		},
+		Mirrors: []MirrorEntry{{From: "shared", To: "claude"}},
+		Skills:  []SkillEntry{{Name: "anysearch", Target: "shared", Source: SourceEntry{Repo: "r/a", Ref: "main", Path: "skills/anysearch"}}},
+	})
+	writeJSON(t, getLockPath(manifestPath), LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"anysearch": {Commit: "aaaaaaaaaaaaaaaa", Path: "skills/anysearch"},
+		},
+	})
+
+	writeFile(t, filepath.Join(sharedDir, "anysearch", "SKILL.md"), "# anysearch\n")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(sharedDir, "anysearch"), filepath.Join(claudeDir, "anysearch")); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := readLock(getLockPath(manifestPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdDoctor(m, lock, manifestPath)
+	})
+	if !strings.Contains(out, "no drift") {
+		t.Fatalf("expected clean doctor output, got:\n%s", out)
 	}
 }

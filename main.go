@@ -175,6 +175,7 @@ func usage() {
   sync [name]       Reconcile manifest + lock to disk + mirrors
   install [name]    Alias for sync (legacy)
   update            Check remote commits, update changed skills
+  doctor            Report manifest/lock/disk/mirror drift
   remove <name...>  Remove one or more skills from manifest, lock, disk, and mirrors
   move <name> <target> Move a skill to a different target directory
   fmt               Format manifest to canonical form
@@ -208,6 +209,7 @@ func usage() {
   skills remove drawio --keep-manifest
   skills remove drawio --dry-run
   skills move caveman shared
+  skills doctor
   skills sync --dry-run
   skills fmt
   skills fmt --dry-run
@@ -353,6 +355,8 @@ func main() {
 			target = positional[1]
 		}
 		cmdUpdate(m, lock, manifestPath, target, dryRun, yes)
+	case "doctor":
+		cmdDoctor(m, lock, manifestPath)
 	case "move", "retarget":
 		if len(positional) < 3 {
 			fmt.Fprintln(os.Stderr, "skills: move requires a skill name and a target directory")
@@ -429,6 +433,7 @@ _skills() {
     'sync:reconcile manifest + lock to disk (fast)'
     'install:alias for sync (legacy)'
     'update:audit and update skills'
+    'doctor:report manifest/lock/disk/mirror drift'
     'remove:remove a skill from manifest and disk'
     'move:move a skill to a different target directory'
     'info:show skill details'
@@ -474,7 +479,7 @@ _skills "$@"
       return
       ;;
   esac
-  COMPREPLY=($(compgen -W "add list sync install update remove move info fmt completion" -- "$cur"))
+  COMPREPLY=($(compgen -W "add list sync install update doctor remove move info fmt completion" -- "$cur"))
 }
 complete -F _skills skills
 `)
@@ -867,8 +872,9 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 func sortItems(items []auditItem) {
 	// Non-ok first, then alphabetical
 	statusOrder := map[string]int{
-		"outdated": 0, "degraded": 1, "missing": 2, "uninstalled": 3, "path-changed": 4, "stale-disk": 5,
-		"stale": 6, "orphan": 7, "ok": 8,
+		"invalid-target": 0, "mirror-conflict": 1, "mirror-wrong-link": 2, "mirror-missing": 3, "mirror-orphan": 4,
+		"outdated": 5, "degraded": 6, "missing": 7, "uninstalled": 8, "path-changed": 9, "stale-disk": 10,
+		"stale": 11, "orphan": 12, "ok": 13,
 	}
 	for i := 0; i < len(items); i++ {
 		for j := i + 1; j < len(items); j++ {
