@@ -16,6 +16,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: 'stable'
+          cache: false
       - run: go build -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o skills-linux-amd64 .
       - run: ./skills-linux-amd64 completion zsh > _skills
       - uses: actions/upload-artifact@v4
@@ -34,6 +35,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: 'stable'
+          cache: false
       - run: go build -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o skills-darwin-arm64 .
       - uses: actions/upload-artifact@v4
         with:
@@ -56,7 +58,7 @@ jobs:
       - name: Checksums
         run: sha256sum skills-* _skills > checksums.txt
 
-      - uses: softprops/action-gh-release@v1
+      - uses: softprops/action-gh-release@v2
         with:
           files: |
             skills-*
@@ -85,9 +87,11 @@ jobs:
       - name: Compute SHA256
         id: shas
         run: |
-          echo "linux=$(sha256sum skills-linux-amd64 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          echo "darwin=$(sha256sum skills-darwin-arm64 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          echo "completion=$(sha256sum _skills | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          {
+            echo "linux=$(sha256sum skills-linux-amd64 | cut -d' ' -f1)"
+            echo "darwin=$(sha256sum skills-darwin-arm64 | cut -d' ' -f1)"
+            echo "completion=$(sha256sum _skills | cut -d' ' -f1)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Update formula
         env:
