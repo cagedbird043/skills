@@ -197,6 +197,7 @@ func usage() {
   skills add cagedbird043/skills skills/caveman
   skills add cagedbird043/skills --name myname --ref develop
   skills add cagedbird043/skills --files "SKILL.md=README.md"
+  skills add DietrichGebert/ponytail skills/ponytail --target omp
   skills add cagedbird043/skills --dry-run
   skills add cagedbird043/skills --no-install
   skills sync
@@ -211,7 +212,6 @@ func usage() {
   skills fmt
   skills fmt --dry-run
   skills info drawio
-  skills completion zsh > ~/.local/share/zsh/site-functions/_skills
 `, bold("skills"), version,
 		bold("Usage"),
 		bold("Commands"),
@@ -1009,15 +1009,8 @@ func cmdRemove(m *Manifest, lock *LockFile, manifestPath string, names []string,
 // Transaction order: validate → dry-run check → fetch commit → install → write manifest → write lock → mirrors.
 func cmdAdd(m *Manifest, lock *LockFile, manifestPath string, opts addOptions, dryRun bool) {
 	// 1. Validate target exists
-	targetExists := false
-	for _, d := range m.Directories {
-		if d.Name == opts.Target {
-			targetExists = true
-			break
-		}
-	}
-	if !targetExists {
-		fail("target %q not found in manifest directories", opts.Target)
+	if !targetExists(opts.Target, m.Directories) {
+		fail("target %q not found in manifest directories or reserved targets", opts.Target)
 		os.Exit(1)
 	}
 
@@ -1290,16 +1283,9 @@ func cmdMove(m *Manifest, lock *LockFile, manifestPath string, name string, targ
 		return
 	}
 
-	// 2. Validate the new target exists in directories
-	targetExists := false
-	for _, d := range m.Directories {
-		if d.Name == target {
-			targetExists = true
-			break
-		}
-	}
-	if !targetExists {
-		fail("target %q not found in manifest directories", target)
+	// 2. Validate the new target exists
+	if !targetExists(target, m.Directories) {
+		fail("target %q not found in manifest directories or reserved targets", target)
 		os.Exit(1)
 	}
 

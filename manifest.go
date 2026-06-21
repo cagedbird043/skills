@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -154,6 +155,8 @@ type LockSkill struct {
 
 // ── path helpers ─────────────────────────────────────────────────────
 
+const specialTargetOMP = "omp"
+
 func expandPath(p string) string {
 	if len(p) > 1 && p[:2] == "~/" {
 		home, _ := os.UserHomeDir()
@@ -162,7 +165,38 @@ func expandPath(p string) string {
 	return p
 }
 
+func resolveOMPUserSkillsDir() string {
+	if out, err := exec.Command("omp", "config", "path").Output(); err == nil {
+		agentDir := strings.TrimSpace(string(out))
+		if agentDir != "" {
+			return filepath.Join(expandPath(agentDir), "skills")
+		}
+	}
+
+	configDir := ".omp"
+	if v := strings.TrimSpace(os.Getenv("PI_CONFIG_DIR")); v != "" {
+		configDir = v
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, configDir, "agent", "skills")
+}
+
+func targetExists(dirName string, dirs []DirEntry) bool {
+	if dirName == specialTargetOMP {
+		return true
+	}
+	for _, d := range dirs {
+		if d.Name == dirName {
+			return true
+		}
+	}
+	return false
+}
+
 func resolveTargetPath(dirName string, dirs []DirEntry) string {
+	if dirName == specialTargetOMP {
+		return resolveOMPUserSkillsDir()
+	}
 	for _, d := range dirs {
 		if d.Name == dirName {
 			return expandPath(d.Path)

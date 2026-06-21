@@ -82,6 +82,9 @@ skills sync
 # Reconcile a single skill to disk
 skills sync drawio
 
+# Install OMP-only skill into the active profile's native user dir
+skills add DietrichGebert/ponytail skills/ponytail --target omp
+
 # Check skill directory integrity
 skills verify
 
@@ -129,7 +132,7 @@ recording the exact commit of each installed skill.
 | `directories` | Named agent namespace directories (shared, codex, claude, opencode...) |
 | `mirrors` | Cross-namespace symlink derivation: shared → claude = auto-symlink shared skills into claude |
 | `skills[].name` | Skill name, must match the source directory name |
-| `skills[].target` | Which directory to install into (must match a `directories[].name`) |
+| `skills[].target` | Which directory to install into. Usually matches a `directories[].name`; reserved target `omp` installs into the active OMP profile's native user skills dir. |
 | `skills[].source.repo` | GitHub repo in `owner/repo` format |
 | `skills[].source.ref` | Branch or tag to track |
 | `skills[].source.path` | Path within the repo to the skill directory |

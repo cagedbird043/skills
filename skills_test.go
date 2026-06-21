@@ -59,6 +59,21 @@ func writeJSON(t *testing.T, path string, v interface{}) {
 	writeFile(t, path, string(data))
 }
 
+func installFakeOMP(t *testing.T, agentDir string) {
+	t.Helper()
+	binDir := t.TempDir()
+	ompPath := filepath.Join(binDir, "omp")
+	writeFile(t, ompPath, "#!/bin/sh\nprintf '%s\\n' \""+agentDir+"\"\n")
+	if err := os.Chmod(ompPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pathEnv := binDir
+	if oldPath := os.Getenv("PATH"); oldPath != "" {
+		pathEnv += string(os.PathListSeparator) + oldPath
+	}
+	t.Setenv("PATH", pathEnv)
+}
+
 // ── manifest / lock I/O ──────────────────────────────────────────────
 
 func TestReadManifest(t *testing.T) {
@@ -165,6 +180,22 @@ func TestResolveTargetPath(t *testing.T) {
 	if got := resolveTargetPath("nonexistent", dirs); got != "" {
 		t.Errorf("nonexistent = %q, want empty", got)
 	}
+
+	t.Run("omp via omp config path", func(t *testing.T) {
+		agentDir := filepath.Join(t.TempDir(), "profile-agent")
+		installFakeOMP(t, agentDir)
+		if got := resolveTargetPath("omp", dirs); got != filepath.Join(agentDir, "skills") {
+			t.Fatalf("omp = %q, want %q", got, filepath.Join(agentDir, "skills"))
+		}
+	})
+
+	t.Run("omp fallback honors PI_CONFIG_DIR", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		t.Setenv("PI_CONFIG_DIR", ".config/omp")
+		if got := resolveTargetPath("omp", dirs); got != filepath.Join(home, ".config", "omp", "agent", "skills") {
+			t.Fatalf("omp fallback = %q", got)
+		}
+	})
 }
 
 // ── applySymlinks safety ─────────────────────────────────────────────
@@ -2000,6 +2031,56 @@ func TestCmdAdd_GitHubDir_Success(t *testing.T) {
 	}
 }
 
+func TestCmdAdd_OMPTarget_Success(t *testing.T) {
+	dir := t.TempDir()
+	agentDir := filepath.Join(dir, "omp-agent")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+	writeJSON(t, manifestPath, Manifest{
+		Version: 1,
+		Directories: []DirEntry{
+			{Name: "shared", Path: filepath.Join(dir, "shared")},
+		},
+		Skills: []SkillEntry{},
+	})
+	installFakeOMP(t, agentDir)
+
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath := getLockPath(manifestPath)
+	lock, err := readLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fakeGitHub()
+	defer restoreGitHub()
+
+	opts := addOptions{
+		Repo:   "user/repo",
+		Path:   "skills/test",
+		Ref:    "main",
+		Target: "omp",
+	}
+
+	oldQ := quiet
+	quiet = true
+	cmdAdd(m, lock, manifestPath, opts, false)
+	quiet = oldQ
+
+	m2, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m2.Skills) != 1 || m2.Skills[0].Target != "omp" {
+		t.Fatalf("unexpected manifest skills: %+v", m2.Skills)
+	}
+	if _, err := os.Stat(filepath.Join(agentDir, "skills", "test", "SKILL.md")); err != nil {
+		t.Fatalf("OMP target SKILL.md not on disk: %v", err)
+	}
+}
+
 func TestCmdAdd_GitHubDir_DryRun(t *testing.T) {
 	dir := t.TempDir()
 	sharedDir := filepath.Join(dir, "skills")
@@ -2880,7 +2961,7 @@ func TestCmdMove_TargetNotFound_Fails(t *testing.T) {
 		t.Fatalf("process ran successfully, want exit status 1")
 	}
 	output := stderr.String()
-	if !strings.Contains(output, `target "shared" not found in manifest directories`) {
+	if !strings.Contains(output, `target "shared" not found in manifest directories or reserved targets`) {
 		t.Fatalf("expected error message about target not found, got: %q", output)
 	}
 }
