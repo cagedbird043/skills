@@ -1,5 +1,7 @@
 # skills — 开发与测试 SOP
 
+所有 Agent-native 技能和文档入口，请参阅 [README.md](README.md) 中的 `## Agent-native Skills` 章节。
+
 ## 本地测试
 
 ```bash

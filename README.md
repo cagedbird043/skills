@@ -175,3 +175,17 @@ skills completion zsh > ~/.local/share/zsh/site-functions/_skills
 # bash
 skills completion bash > ~/.local/share/bash-completion/completions/skills
 ```
+
+## Agent-native Skills
+
+### Start here
+
+- 任务 = skills 生态治理 (管理/同步/排查技能) → 先读 [README.md](README.md) → 需要执行 SOP 时再读 [.agents/skills/manifest-governance/SKILL.md](.agents/skills/manifest-governance/SKILL.md)
+
+### Skills
+
+- [manifest-governance](.agents/skills/manifest-governance/SKILL.md): Triggered when managing, synchronizing, or diagnosing agent skills via manifest, lock, and mirror configurations.
+
+### Do not read everything
+
+- Agent MUST start by reading [README.md](README.md) and [AGENTS.md](AGENTS.md). DO NOT scan the entire repository recursively.
