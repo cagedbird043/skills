@@ -7,7 +7,8 @@ formula_path = sys.argv[1]
 version = sys.argv[2]
 sha_linux = sys.argv[3]
 sha_darwin_arm = sys.argv[4]
-sha_completion = sys.argv[5] if len(sys.argv) > 5 else ""
+sha_completion = sys.argv[5]
+sha_linux_arm = sys.argv[6] if len(sys.argv) > 6 else ""
 
 with open(formula_path) as f:
     content = f.read()
@@ -19,9 +20,12 @@ content = re.sub(r'version ".*"', f'version "{version}"', content)
 platforms = [
     ('skills-darwin-arm64', sha_darwin_arm),
     ('skills-linux-amd64', sha_linux),
+    ('skills-linux-arm64', sha_linux_arm),
 ]
 
 for url_suffix, new_sha in platforms:
+    if not new_sha:
+        continue
     pattern = re.escape(f'url "https://github.com/cagedbird043/skills/releases/download/v#{{version}}/{url_suffix}"')
     url_match = re.search(pattern, content)
     if not url_match:
@@ -34,7 +38,6 @@ for url_suffix, new_sha in platforms:
             old_sha = sha_line_match.group()
             new = f'sha256 "{new_sha}"'
             content = content.replace(old_sha, new, 1)
-
 # Update completion resource URL (only if hardcoded version; skips if #{version})
 resource_url_pattern = r'(releases/download/v)\d+\.\d+\.\d+(/_skills")'
 content = re.sub(resource_url_pattern, rf'\g<1>{version}\g<2>', content)
