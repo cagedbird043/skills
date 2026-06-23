@@ -184,6 +184,16 @@ func collectMirrorDoctorItems(m *Manifest) []auditItem {
 			if s.Target != mirror.From {
 				continue
 			}
+			excluded := false
+			for _, ex := range mirror.Exclude {
+				if ex == s.Name {
+					excluded = true
+					break
+				}
+			}
+			if excluded {
+				continue
+			}
 			src := filepath.Join(srcDir, s.Name)
 			if _, err := os.Stat(filepath.Join(src, "SKILL.md")); err != nil {
 				continue

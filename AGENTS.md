@@ -11,6 +11,12 @@ go test -race -count=1 ./...
 
 测试覆盖 `install.go`、`manifest.go`、`main.go`。不要 mock，走真实文件系统。
 
+## 调试与安装辨析
+
+**绝对禁止混淆安装版本与调试版本**：
+- **开发调试**：直接本地编译（如 `go build -o ./skills .`），并运行本地绝对/相对路径二进制（如 `./skills`），绝不执行 `make install` 或拷贝至 `~/.local/bin`。
+- **日常使用**：统一使用包管理器（Homebrew `skills-cli`）安装的版本。系统 `PATH` 维持 `brew` 优先级在前。
+
 ## 对 dotfiles 回归
 
 dotfiles 是主要测试目标。每次改完行为必须：
