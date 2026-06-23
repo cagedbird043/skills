@@ -13,12 +13,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Install cross-compilation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
       - uses: actions/setup-go@v6
         with:
           go-version: 'stable'
           cache: false
       - run: go build -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o skills-linux-amd64 .
-      - run: GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o skills-linux-arm64 .
+      - run: CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o skills-linux-arm64 .
       - run: ./skills-linux-amd64 completion zsh > _skills
       - uses: actions/upload-artifact@v4
         with:
