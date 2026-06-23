@@ -15,8 +15,9 @@ import (
 // ── types ────────────────────────────────────────────────────────────
 
 type MirrorEntry struct {
-	From string `json:"from"`
-	To   string `json:"to"`
+	From    string   `json:"from"`
+	To      string   `json:"to"`
+	Exclude []string `json:"exclude,omitempty"`
 }
 
 type Manifest struct {

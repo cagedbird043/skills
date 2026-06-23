@@ -352,6 +352,53 @@ func TestApplyMirrors(t *testing.T) {
 	}
 }
 
+func TestApplyMirrors_Exclude(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	claudeDir := filepath.Join(dir, "claude")
+
+	// Create shared skills
+	for _, name := range []string{"drawio", "anysearch"} {
+		skillDir := filepath.Join(sharedDir, name)
+		os.MkdirAll(skillDir, 0o755)
+		writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# "+name)
+	}
+
+	m := &Manifest{
+		Directories: []DirEntry{
+			{Name: "shared", Path: sharedDir},
+			{Name: "claude", Path: claudeDir},
+		},
+		Mirrors: []MirrorEntry{
+			{From: "shared", To: "claude", Exclude: []string{"anysearch"}},
+		},
+		Skills: []SkillEntry{
+			{Name: "drawio", Target: "shared", Source: SourceEntry{Repo: "a/b", Path: "skills/drawio"}},
+			{Name: "anysearch", Target: "shared", Source: SourceEntry{Repo: "a/b", Path: "skills/anysearch"}},
+		},
+	}
+
+	// Create a pre-existing anysearch symlink to test that it gets cleaned up
+	preExistingLink := filepath.Join(claudeDir, "anysearch")
+	os.MkdirAll(claudeDir, 0o755)
+	if err := os.Symlink(filepath.Join(sharedDir, "anysearch"), preExistingLink); err != nil {
+		t.Fatal(err)
+	}
+
+	applyMirrors(m)
+
+	// Verify drawio is mirrored
+	drawioDst := filepath.Join(claudeDir, "drawio")
+	if _, err := os.Readlink(drawioDst); err != nil {
+		t.Fatalf("expected drawio symlink: %v", err)
+	}
+
+	// Verify anysearch is NOT mirrored and pre-existing is cleaned up
+	if _, err := os.Readlink(preExistingLink); err == nil {
+		t.Fatal("expected anysearch symlink to be deleted (excluded)")
+	}
+}
+
 func TestApplyMirrors_OrphanCleanup(t *testing.T) {
 	dir := t.TempDir()
 	sharedDir := filepath.Join(dir, "shared")

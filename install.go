@@ -739,6 +739,17 @@ func applyMirrors(m *Manifest) {
 		wanted := make(map[string]bool)
 		for _, s := range m.Skills {
 			if s.Target == mirror.From {
+				excluded := false
+				for _, ex := range mirror.Exclude {
+					if ex == s.Name {
+						excluded = true
+						break
+					}
+				}
+				if excluded {
+					continue
+				}
+
 				wanted[s.Name] = true
 
 				src := filepath.Join(srcDir, s.Name)
