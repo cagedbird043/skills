@@ -425,6 +425,15 @@ func installSkillFiles(r InstallResult, skill SkillEntry, destDir string, ref st
 			return r
 		}
 
+		if strings.HasSuffix(f.Remote, "/") || strings.HasSuffix(f.Local, "/") {
+			if err := downloadDirContents(repo, ref, f.Remote, f.Local, tmpDir); err != nil {
+				r.Action = "failed"
+				r.Error = fmt.Sprintf("download dir %s: %v", f.Remote, err)
+				return r
+			}
+			continue
+		}
+
 		if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 			r.Action = "failed"
 			r.Error = fmt.Sprintf("mkdir %s: %v", filepath.Dir(localPath), err)
@@ -482,6 +491,53 @@ func installSkillFiles(r InstallResult, skill SkillEntry, destDir string, ref st
 
 	r.Action = "ok"
 	return r
+}
+
+type contentItem struct {
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	Type        string `json:"type"`
+	DownloadURL string `json:"download_url"`
+}
+
+func downloadDirContents(repo, ref, remoteDir, localDir, tmpDir string) error {
+	url := fmt.Sprintf("%s/repos/%s/contents/%s?ref=%s", githubAPI, repo, strings.TrimSuffix(remoteDir, "/"), ref)
+	resp, err := githubGET(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("fetch dir %s: HTTP %d", remoteDir, resp.StatusCode)
+	}
+
+	var items []contentItem
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		return fmt.Errorf("decode dir %s: %w", remoteDir, err)
+	}
+
+	for _, item := range items {
+		if item.Type == "file" {
+			data, err := downloadFileFn(repo, ref, item.Path)
+			if err != nil {
+				return fmt.Errorf("download %s: %w", item.Path, err)
+			}
+			destPath := filepath.Join(tmpDir, localDir, item.Name)
+			if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(destPath, data, 0o644); err != nil {
+				return err
+			}
+		} else if item.Type == "dir" {
+			subRemote := item.Path + "/"
+			subLocal := filepath.Join(localDir, item.Name) + "/"
+			if err := downloadDirContents(repo, ref, subRemote, subLocal, tmpDir); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // installOneSkill installs a skill trusting the lock file (no remote commit check).
