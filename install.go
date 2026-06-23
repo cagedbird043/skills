@@ -27,6 +27,24 @@ var (
 	cachedTokenOnce sync.Once
 )
 
+func safeLookPath(file string) (string, error) {
+	if strings.Contains(file, "/") {
+		return file, nil
+	}
+	pathEnv := os.Getenv("PATH")
+	for _, dir := range filepath.SplitList(pathEnv) {
+		if dir == "" {
+			dir = "."
+		}
+		path := filepath.Join(dir, file)
+		fi, err := os.Stat(path)
+		if err == nil && !fi.IsDir() {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("executable file not found in $PATH")
+}
+
 func githubToken() string {
 	cachedTokenOnce.Do(func() {
 		if t := os.Getenv("GITHUB_TOKEN"); t != "" {
@@ -34,7 +52,10 @@ func githubToken() string {
 			return
 		}
 		// Try gh CLI — search common locations
-		ghPaths := []string{"gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/home/linuxbrew/.linuxbrew/bin/gh"}
+		ghPaths := []string{"/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/home/linuxbrew/.linuxbrew/bin/gh"}
+		if p, err := safeLookPath("gh"); err == nil {
+			ghPaths = append([]string{p}, ghPaths...)
+		}
 		for _, p := range ghPaths {
 			cmd := exec.Command(p, "auth", "token")
 			out, err := cmd.Output()
