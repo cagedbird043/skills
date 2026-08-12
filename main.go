@@ -186,6 +186,7 @@ func usage() {
   -q, --quiet            Suppress normal output, show errors only
   -n, --dry-run          Show what would be done without doing it
   -k, --keep-manifest    With remove: keep the manifest entry
+      --prune-tmp        With doctor: delete interrupted-install leftovers
       --version          Print version
 
 %s:
@@ -210,6 +211,8 @@ func usage() {
   skills remove drawio --dry-run
   skills move caveman shared
   skills doctor
+  skills doctor --prune-tmp
+  skills doctor --prune-tmp --dry-run
   skills sync --dry-run
   skills fmt
   skills fmt --dry-run
@@ -243,6 +246,7 @@ func main() {
 	dryRun := false
 	yes := false
 	keepManifest := false
+	pruneTmp := false
 
 	for i := 1; i < len(os.Args); i++ {
 		arg := os.Args[i]
@@ -278,6 +282,10 @@ func main() {
 		}
 		if arg == "-k" || arg == "--keep-manifest" {
 			keepManifest = true
+			continue
+		}
+		if arg == "--prune-tmp" {
+			pruneTmp = true
 			continue
 		}
 		if arg == "--complete-names" {
@@ -356,7 +364,7 @@ func main() {
 		}
 		cmdUpdate(m, lock, manifestPath, target, dryRun, yes)
 	case "doctor":
-		cmdDoctor(m, lock, manifestPath)
+		cmdDoctor(m, lock, manifestPath, pruneTmp, dryRun)
 	case "move", "retarget":
 		if len(positional) < 3 {
 			fmt.Fprintln(os.Stderr, "skills: move requires a skill name and a target directory")
@@ -462,6 +470,10 @@ _skills() {
     remove)
       _alternative \
         'args: :(--dry-run -n --keep-manifest -k)'
+      ;;
+    doctor)
+      _alternative \
+        'args: :(--prune-tmp --dry-run -n)'
       ;;
   esac
 }
@@ -874,7 +886,7 @@ func sortItems(items []auditItem) {
 	statusOrder := map[string]int{
 		"invalid-target": 0, "mirror-conflict": 1, "mirror-wrong-link": 2, "mirror-missing": 3, "mirror-orphan": 4,
 		"outdated": 5, "degraded": 6, "missing": 7, "uninstalled": 8, "path-changed": 9, "stale-disk": 10,
-		"stale": 11, "orphan": 12, "ok": 13,
+		"stale": 11, "orphan": 12, statusTmpLeftover: 13, "ok": 14,
 	}
 	for i := 0; i < len(items); i++ {
 		for j := i + 1; j < len(items); j++ {

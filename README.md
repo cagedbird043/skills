@@ -88,6 +88,9 @@ skills add DietrichGebert/ponytail skills/ponytail --target omp
 # Report manifest/lock/disk/mirror drift
 skills doctor
 
+# Delete leftovers from interrupted installs (.<skill>.tmp-*/.old-*)
+skills doctor --prune-tmp
+
 # Show skill details
 skills info drawio
 ```
@@ -146,6 +149,7 @@ recording the exact commit of each installed skill.
 | `skills install [name]` | Legacy alias for `sync` |
 | `skills update [name]` | Check remote commits, update changed skills |
 | `skills doctor` | Report active manifest path plus manifest/lock/disk/mirror drift |
+| `skills doctor --prune-tmp` | Same report, then delete interrupted-install leftovers |
 | `skills info <name>` | Show source, path, commit, and disk location |
 | `skills completion <shell>` | Generate shell completion (zsh, bash) |
 
@@ -155,6 +159,8 @@ recording the exact commit of each installed skill.
 |------|-------------|
 | `-m, --manifest <path>` | Path to manifest file |
 | `-q, --quiet` | Suppress normal output, errors only |
+| `-n, --dry-run` | Show what would be done without doing it |
+| `--prune-tmp` | With `doctor`: delete interrupted-install leftovers |
 | `--version` | Print version |
 
 ## Environment

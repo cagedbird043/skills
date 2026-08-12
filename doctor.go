@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func cmdDoctor(m *Manifest, lock *LockFile, manifestPath string) {
+func cmdDoctor(m *Manifest, lock *LockFile, manifestPath string, pruneTmp, dryRun bool) {
 	items := collectDoctorItems(m, lock)
 
 	fmt.Printf("  %s: %s\n", bold("manifest"), manifestPath)
@@ -23,11 +23,16 @@ func cmdDoctor(m *Manifest, lock *LockFile, manifestPath string) {
 
 	okCount := 0
 	issueCount := 0
+	tmpCount := 0
 	for _, item := range items {
 		statusColor := doctorStatusLabel(item.Status)
-		if item.Status == "ok" {
+		switch item.Status {
+		case "ok":
 			okCount++
-		} else {
+		case statusTmpLeftover:
+			tmpCount++
+			issueCount++
+		default:
 			issueCount++
 		}
 		if item.Detail != "" {
@@ -43,6 +48,13 @@ func cmdDoctor(m *Manifest, lock *LockFile, manifestPath string) {
 	}
 	fmt.Printf("  %s\n", yellow(fmt.Sprintf("%d ok, %d drift item(s)", okCount, issueCount)))
 	fmt.Printf("  %s\n", dim("Reconcile local state with 'skills sync'; use 'skills update' when refs changed upstream."))
+	if tmpCount > 0 && !pruneTmp {
+		fmt.Printf("  %s\n", dim(fmt.Sprintf("%d leftover(s) from interrupted installs are safe to delete: run 'skills doctor --prune-tmp'.", tmpCount)))
+	}
+	if pruneTmp {
+		fmt.Println()
+		pruneTmpLeftovers(m, dryRun)
+	}
 }
 
 func doctorStatusLabel(status string) string {
@@ -109,6 +121,13 @@ func collectDoctorItems(m *Manifest, lock *LockFile) []auditItem {
 				continue
 			}
 			name := entry.Name()
+			// Leftovers are named ".<skill>.tmp-*"/".<skill>.old-*" and may or may
+			// not carry SKILL.md depending on where the install died, so classify
+			// them before the SKILL.md check below.
+			if isTmpLeftoverName(name) {
+				items = append(items, auditItem{name, statusTmpLeftover, fmt.Sprintf("interrupted install leftover in %s; safe to delete", dir.name)})
+				continue
+			}
 			if manifestNames[name] {
 				continue
 			}
@@ -116,7 +135,7 @@ func collectDoctorItems(m *Manifest, lock *LockFile) []auditItem {
 				continue
 			}
 			if _, err := os.Stat(filepath.Join(dir.path, name, "SKILL.md")); err == nil {
-				items = append(items, auditItem{name, "orphan", fmt.Sprintf("only on disk in %s", dir.name)})
+				items = append(items, auditItem{name, "orphan", fmt.Sprintf("only on disk in %s; not managed by skills", dir.name)})
 			}
 		}
 	}
@@ -271,4 +290,66 @@ func shortCommit(commit string) string {
 		return commit
 	}
 	return commit[:8]
+}
+
+// statusTmpLeftover marks a staging/backup directory abandoned by an interrupted
+// install. Unlike an orphan (a real skill placed on disk by hand), it holds no
+// state worth keeping and is always safe to delete.
+const statusTmpLeftover = "tmp-leftover"
+
+type tmpLeftover struct {
+	dir  string
+	name string
+	path string
+}
+
+// isTmpLeftoverName reports whether name is an install leftover: installOneSkill
+// stages downloads in ".<skill>.tmp-<rand>" and parks the previous version in
+// ".<skill>.old-<rand>", removing both once the swap succeeds.
+func isTmpLeftoverName(name string) bool {
+	if !strings.HasPrefix(name, ".") {
+		return false
+	}
+	return strings.Contains(name, ".tmp-") || strings.Contains(name, ".old-")
+}
+
+func collectTmpLeftovers(m *Manifest) []tmpLeftover {
+	leftovers := make([]tmpLeftover, 0)
+	for _, dir := range doctorScanDirs(m) {
+		entries, err := os.ReadDir(dir.path)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() || !isTmpLeftoverName(entry.Name()) {
+				continue
+			}
+			leftovers = append(leftovers, tmpLeftover{dir: dir.name, name: entry.Name(), path: filepath.Join(dir.path, entry.Name())})
+		}
+	}
+	return leftovers
+}
+
+// pruneTmpLeftovers deletes install leftovers from every scanned target directory.
+// It never touches manifest skills, orphans, or mirror symlinks.
+func pruneTmpLeftovers(m *Manifest, dryRun bool) {
+	leftovers := collectTmpLeftovers(m)
+	if len(leftovers) == 0 {
+		fmt.Printf("  %s\n", green("No interrupted-install leftovers to prune."))
+		return
+	}
+
+	fmt.Println(bold("Prune:"))
+	for _, l := range leftovers {
+		label := l.dir + "/" + l.name
+		if dryRun {
+			fmt.Printf("  %-16s %s\n", yellow("would remove"), label)
+			continue
+		}
+		if err := os.RemoveAll(l.path); err != nil {
+			warn("prune %s: %v", l.path, err)
+			continue
+		}
+		fmt.Printf("  %-16s %s\n", green("removed"), label)
+	}
 }

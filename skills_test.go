@@ -3180,7 +3180,7 @@ func TestCmdDoctor_ReportsCommonDriftStates(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		cmdDoctor(m, lock, manifestPath)
+		cmdDoctor(m, lock, manifestPath, false, false)
 	})
 
 	for _, want := range []string{
@@ -3252,9 +3252,164 @@ func TestCmdDoctor_CleanState(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		cmdDoctor(m, lock, manifestPath)
+		cmdDoctor(m, lock, manifestPath, false, false)
 	})
 	if !strings.Contains(out, "no drift") {
 		t.Fatalf("expected clean doctor output, got:\n%s", out)
+	}
+}
+
+// doctorTmpFixture builds a manifest with one healthy skill plus a hand-placed
+// orphan and two interrupted-install leftovers in the shared directory.
+func doctorTmpFixture(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	manifestPath := filepath.Join(dir, ".manifest.json")
+	writeJSON(t, manifestPath, Manifest{
+		Version:     1,
+		Directories: []DirEntry{{Name: "shared", Path: sharedDir}},
+		Skills:      []SkillEntry{{Name: "anysearch", Target: "shared", Source: SourceEntry{Repo: "r/a", Ref: "main", Path: "skills/anysearch"}}},
+	})
+	writeJSON(t, getLockPath(manifestPath), LockFile{
+		Version: 1,
+		Skills:  map[string]LockSkill{"anysearch": {Commit: "aaaaaaaaaaaaaaaa", Path: "skills/anysearch"}},
+	})
+
+	writeFile(t, filepath.Join(sharedDir, "anysearch", "SKILL.md"), "# anysearch\n")
+	writeFile(t, filepath.Join(sharedDir, "lark-im", "SKILL.md"), "# hand-placed\n")
+	// Died mid-download: no SKILL.md yet.
+	if err := os.MkdirAll(filepath.Join(sharedDir, ".ui-aesthetics.tmp-1240448978"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Died mid-swap: previous version parked as backup.
+	writeFile(t, filepath.Join(sharedDir, ".docx.old-99", "SKILL.md"), "# backup\n")
+	return manifestPath, sharedDir
+}
+
+func loadDoctorFixture(t *testing.T, manifestPath string) (*Manifest, *LockFile) {
+	t.Helper()
+	m, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := readLock(getLockPath(manifestPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m, lock
+}
+
+func TestCmdDoctor_SeparatesTmpLeftoversFromOrphans(t *testing.T) {
+	manifestPath, sharedDir := doctorTmpFixture(t)
+	m, lock := loadDoctorFixture(t, manifestPath)
+
+	out := captureStdout(t, func() {
+		cmdDoctor(m, lock, manifestPath, false, false)
+	})
+
+	for _, want := range []string{
+		"tmp-leftover",
+		".ui-aesthetics.tmp-1240448978",
+		".docx.old-99",
+		"safe to delete",
+		"lark-im",
+		"orphan",
+		"not managed by skills",
+		"--prune-tmp",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected doctor output to contain %q, got:\n%s", want, out)
+		}
+	}
+
+	// Leftovers must not be reported as orphans, and the hand-placed skill must
+	// not be reported as a leftover.
+	items := collectDoctorItems(m, lock)
+	statusByName := make(map[string]string, len(items))
+	for _, item := range items {
+		statusByName[item.Name] = item.Status
+	}
+	for name, want := range map[string]string{
+		".ui-aesthetics.tmp-1240448978": statusTmpLeftover,
+		".docx.old-99":                  statusTmpLeftover,
+		"lark-im":                       "orphan",
+		"anysearch":                     "ok",
+	} {
+		if got := statusByName[name]; got != want {
+			t.Fatalf("status for %s = %q, want %q", name, got, want)
+		}
+	}
+
+	// Report-only mode must not touch disk.
+	if _, err := os.Stat(filepath.Join(sharedDir, ".ui-aesthetics.tmp-1240448978")); err != nil {
+		t.Fatalf("doctor without --prune-tmp must be read-only: %v", err)
+	}
+}
+
+func TestCmdDoctor_PruneTmpRemovesOnlyLeftovers(t *testing.T) {
+	manifestPath, sharedDir := doctorTmpFixture(t)
+	m, lock := loadDoctorFixture(t, manifestPath)
+
+	out := captureStdout(t, func() {
+		cmdDoctor(m, lock, manifestPath, true, false)
+	})
+	if !strings.Contains(out, "removed") {
+		t.Fatalf("expected prune output, got:\n%s", out)
+	}
+
+	for _, gone := range []string{".ui-aesthetics.tmp-1240448978", ".docx.old-99"} {
+		if _, err := os.Stat(filepath.Join(sharedDir, gone)); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be pruned, stat err = %v", gone, err)
+		}
+	}
+	for _, kept := range []string{"anysearch", "lark-im"} {
+		if _, err := os.Stat(filepath.Join(sharedDir, kept, "SKILL.md")); err != nil {
+			t.Fatalf("prune must not touch %s: %v", kept, err)
+		}
+	}
+
+	// Manifest and lock are untouched by pruning.
+	lockAfter, err := readLock(getLockPath(manifestPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := lockAfter.Skills["anysearch"]; !ok {
+		t.Fatal("prune must not rewrite the lock")
+	}
+}
+
+func TestCmdDoctor_PruneTmpDryRunKeepsDisk(t *testing.T) {
+	manifestPath, sharedDir := doctorTmpFixture(t)
+	m, lock := loadDoctorFixture(t, manifestPath)
+
+	out := captureStdout(t, func() {
+		cmdDoctor(m, lock, manifestPath, true, true)
+	})
+	if !strings.Contains(out, "would remove") {
+		t.Fatalf("expected dry-run prune output, got:\n%s", out)
+	}
+	if strings.Contains(out, "removed  ") {
+		t.Fatalf("dry-run must not report removals, got:\n%s", out)
+	}
+	for _, kept := range []string{".ui-aesthetics.tmp-1240448978", ".docx.old-99"} {
+		if _, err := os.Stat(filepath.Join(sharedDir, kept)); err != nil {
+			t.Fatalf("dry-run must keep %s: %v", kept, err)
+		}
+	}
+}
+
+func TestIsTmpLeftoverName(t *testing.T) {
+	for name, want := range map[string]bool{
+		".ui-aesthetics.tmp-1240448978": true,
+		".docx.old-99":                  true,
+		"anysearch":                     false,
+		"lark-im":                       false,
+		".hidden-skill":                 false,
+		"docx.tmp-1":                    false, // managed leftovers are always dot-prefixed
+	} {
+		if got := isTmpLeftoverName(name); got != want {
+			t.Fatalf("isTmpLeftoverName(%q) = %v, want %v", name, got, want)
+		}
 	}
 }
