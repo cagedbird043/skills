@@ -3310,7 +3310,7 @@ func TestCmdDoctor_ReportsCommonDriftStates(t *testing.T) {
 
 	writeFile(t, filepath.Join(sharedDir, "caveman", "SKILL.md"), "# caveman\n")
 	writeFile(t, filepath.Join(sharedDir, "drawio", "SKILL.md"), "# drawio\n")
-	writeFile(t, filepath.Join(sharedDir, "orphan", "SKILL.md"), "# orphan\n")
+	writeFile(t, filepath.Join(sharedDir, "handmade", "SKILL.md"), "# hand-placed\n")
 	writeFile(t, filepath.Join(claudeDir, "caveman", "SKILL.md"), "# not-a-symlink\n")
 
 	m, err := readManifest(manifestPath)
@@ -3338,7 +3338,7 @@ func TestCmdDoctor_ReportsCommonDriftStates(t *testing.T) {
 		"path-changed",
 		"ghost",
 		"stale",
-		"orphan",
+		"unmanaged",
 		"mirror-conflict",
 		"claude/caveman",
 	} {
@@ -3443,7 +3443,7 @@ func loadDoctorFixture(t *testing.T, manifestPath string) (*Manifest, *LockFile)
 	return m, lock
 }
 
-func TestCmdDoctor_SeparatesTmpLeftoversFromOrphans(t *testing.T) {
+func TestCmdDoctor_SeparatesTmpLeftoversFromUnmanaged(t *testing.T) {
 	manifestPath, sharedDir := doctorTmpFixture(t)
 	m, lock := loadDoctorFixture(t, manifestPath)
 
@@ -3457,8 +3457,8 @@ func TestCmdDoctor_SeparatesTmpLeftoversFromOrphans(t *testing.T) {
 		".docx.old-99",
 		"safe to delete",
 		"lark-im",
-		"orphan",
-		"not managed by skills",
+		"unmanaged",
+		"skills did not install",
 		"--prune-tmp",
 	} {
 		if !strings.Contains(out, want) {
@@ -3466,7 +3466,7 @@ func TestCmdDoctor_SeparatesTmpLeftoversFromOrphans(t *testing.T) {
 		}
 	}
 
-	// Leftovers must not be reported as orphans, and the hand-placed skill must
+	// Leftovers must not be reported as unmanaged, and the hand-placed skill must
 	// not be reported as a leftover.
 	items := collectDoctorItems(m, lock)
 	statusByName := make(map[string]string, len(items))
@@ -3476,7 +3476,7 @@ func TestCmdDoctor_SeparatesTmpLeftoversFromOrphans(t *testing.T) {
 	for name, want := range map[string]string{
 		".ui-aesthetics.tmp-1240448978": statusTmpLeftover,
 		".docx.old-99":                  statusTmpLeftover,
-		"lark-im":                       "orphan",
+		"lark-im":                       "unmanaged",
 		"anysearch":                     "ok",
 	} {
 		if got := statusByName[name]; got != want {

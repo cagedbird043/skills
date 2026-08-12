@@ -153,6 +153,29 @@ recording the exact commit of each installed skill.
 | `skills info <name>` | Show source, path, commit, and disk location |
 | `skills completion <shell>` | Generate shell completion (zsh, bash) |
 
+## Doctor statuses
+
+`skills doctor` compares three things: what the manifest declares, what the lock
+records, and what is actually on disk. Each row names how they disagree.
+
+| Status | Meaning | What to do |
+|--------|---------|------------|
+| `ok` | Manifest, lock, and disk agree | Nothing |
+| `uninstalled` | Declared, but never installed | `skills sync` |
+| `missing` | Locked, but files are gone from disk | `skills sync` |
+| `stale-disk` | On disk, but no lock entry | `skills sync` |
+| `stale` | In the lock, but no longer declared | `skills sync` |
+| `path-changed` | Manifest points at a different source path than the lock | `skills sync` |
+| `outdated` | Upstream has newer commits | `skills update` |
+| `degraded` | Could not reach GitHub to check | Retry later |
+| `unmanaged` | A real skill on disk that `skills` did not install — typically copied in by hand or by another tool | Keep it, or `skills add` to manage it. Never removed automatically |
+| `tmp-leftover` | Scratch directory abandoned by an interrupted install (`.<skill>.tmp-*`/`.old-*`) | `skills doctor --prune-tmp` |
+| `invalid-target` | Skill or mirror references a directory that does not exist | Fix the manifest |
+| `mirror-missing` | Expected mirror symlink is absent | `skills sync` |
+| `mirror-wrong-link` | Mirror symlink points somewhere unexpected | `skills sync` |
+| `mirror-conflict` | A real directory sits where a mirror symlink belongs | Move it aside, then `skills sync` |
+| `mirror-stray` | Mirror symlink `skills` created now points at nothing it manages | `skills sync` |
+
 ## Options
 
 | Flag | Description |

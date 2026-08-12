@@ -491,6 +491,16 @@ _skills "$@"
       return
       ;;
   esac
+  if [[ $cur == -* ]]; then
+    local flags="-m --manifest -q --quiet -n --dry-run --version"
+    case "${words[1]}" in
+      update) flags="$flags -y --yes" ;;
+      remove) flags="$flags -k --keep-manifest" ;;
+      doctor) flags="$flags --prune-tmp" ;;
+    esac
+    COMPREPLY=($(compgen -W "$flags" -- "$cur"))
+    return
+  fi
   COMPREPLY=($(compgen -W "add list sync install update doctor remove move info fmt completion" -- "$cur"))
 }
 complete -F _skills skills
@@ -618,7 +628,7 @@ func cmdSync(cmdName string, m *Manifest, lock *LockFile, manifestPath, target s
 
 type auditItem struct {
 	Name   string
-	Status string // ok | missing | uninstalled | stale | orphan | path-changed | degraded | outdated
+	Status string // ok | missing | uninstalled | stale | unmanaged | path-changed | degraded | outdated
 	Detail string
 }
 
@@ -746,8 +756,8 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 				}
 				if _, err := os.Stat(filepath.Join(dirPath, name, "SKILL.md")); err == nil {
 					items = append(items, auditItem{
-						name, "orphan",
-						fmt.Sprintf("only on disk in %s", d.Name),
+						name, "unmanaged",
+						fmt.Sprintf("only on disk in %s; skills did not install it", d.Name),
 					})
 				}
 			}
@@ -775,7 +785,7 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 			case "degraded":
 				statusColor = yellow("degraded")
 				nDegraded++
-			case "stale", "orphan":
+			case "stale", "unmanaged":
 				statusColor = red(item.Status)
 				nStale++
 			default:
@@ -884,9 +894,9 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 func sortItems(items []auditItem) {
 	// Non-ok first, then alphabetical
 	statusOrder := map[string]int{
-		"invalid-target": 0, "mirror-conflict": 1, "mirror-wrong-link": 2, "mirror-missing": 3, "mirror-orphan": 4,
+		"invalid-target": 0, "mirror-conflict": 1, "mirror-wrong-link": 2, "mirror-missing": 3, "mirror-stray": 4,
 		"outdated": 5, "degraded": 6, "missing": 7, "uninstalled": 8, "path-changed": 9, "stale-disk": 10,
-		"stale": 11, "orphan": 12, statusTmpLeftover: 13, "ok": 14,
+		"stale": 11, "unmanaged": 12, statusTmpLeftover: 13, "ok": 14,
 	}
 	for i := 0; i < len(items); i++ {
 		for j := i + 1; j < len(items); j++ {

@@ -61,7 +61,7 @@ func doctorStatusLabel(status string) string {
 	switch status {
 	case "ok":
 		return green("ok")
-	case "invalid-target", "missing", "path-changed", "stale-disk", "stale", "orphan", "mirror-missing", "mirror-wrong-link", "mirror-conflict", "mirror-orphan":
+	case "invalid-target", "missing", "path-changed", "stale-disk", "stale", "unmanaged", "mirror-missing", "mirror-wrong-link", "mirror-conflict", "mirror-stray":
 		return red(status)
 	case "uninstalled":
 		return yellow(status)
@@ -135,7 +135,7 @@ func collectDoctorItems(m *Manifest, lock *LockFile) []auditItem {
 				continue
 			}
 			if _, err := os.Stat(filepath.Join(dir.path, name, "SKILL.md")); err == nil {
-				items = append(items, auditItem{name, "orphan", fmt.Sprintf("only on disk in %s; not managed by skills", dir.name)})
+				items = append(items, auditItem{name, "unmanaged", fmt.Sprintf("a real skill in %s that skills did not install; keep it, or run 'skills add' to manage it", dir.name)})
 			}
 		}
 	}
@@ -275,8 +275,8 @@ func collectMirrorDoctorItems(m *Manifest) []auditItem {
 			if _, ok := wanted[entry.Name()]; !ok {
 				items = append(items, auditItem{
 					Name:   mirror.To + "/" + entry.Name(),
-					Status: "mirror-orphan",
-					Detail: fmt.Sprintf("managed symlink remains after %s→%s drift", mirror.From, mirror.To),
+					Status: "mirror-stray",
+					Detail: fmt.Sprintf("symlink skills created for %s→%s, now pointing at nothing it manages; 'skills sync' removes it", mirror.From, mirror.To),
 				})
 			}
 		}
@@ -293,8 +293,8 @@ func shortCommit(commit string) string {
 }
 
 // statusTmpLeftover marks a staging/backup directory abandoned by an interrupted
-// install. Unlike an orphan (a real skill placed on disk by hand), it holds no
-// state worth keeping and is always safe to delete.
+// install. Unlike an "unmanaged" skill (a real skill placed on disk by hand), it
+// holds no state worth keeping and is always safe to delete.
 const statusTmpLeftover = "tmp-leftover"
 
 type tmpLeftover struct {
@@ -331,7 +331,7 @@ func collectTmpLeftovers(m *Manifest) []tmpLeftover {
 }
 
 // pruneTmpLeftovers deletes install leftovers from every scanned target directory.
-// It never touches manifest skills, orphans, or mirror symlinks.
+// It never touches manifest skills, unmanaged skills, or mirror symlinks.
 func pruneTmpLeftovers(m *Manifest, dryRun bool) {
 	leftovers := collectTmpLeftovers(m)
 	if len(leftovers) == 0 {
