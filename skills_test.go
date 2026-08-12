@@ -161,6 +161,14 @@ func TestWriteLockRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	raw, err := os.ReadFile(lf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasSuffix(raw, []byte("\n")) {
+		t.Fatal("lock must end with a trailing newline")
+	}
+
 	l2, err := readLock(lf)
 	if err != nil {
 		t.Fatal(err)
@@ -1006,6 +1014,141 @@ func TestWriteManifestRoundTrip(t *testing.T) {
 	}
 	if len(m2.Symlinks) != 1 || m2.Symlinks[0].From != "~/.codex/skills" {
 		t.Fatalf("symlinks lost: %+v", m2.Symlinks)
+	}
+}
+
+func TestDetectIndent(t *testing.T) {
+	for name, tc := range map[string]struct {
+		data string
+		want string
+	}{
+		"tabs":        {"{\n\t\"version\": 1\n}\n", "\t"},
+		"two spaces":  {"{\n  \"version\": 1\n}\n", "  "},
+		"four spaces": {"{\n    \"version\": 1\n}\n", "    "},
+		"single line": {`{"version":1}`, defaultIndent},
+		"compact":     {"{\n\"version\": 1\n}\n", defaultIndent},
+		"empty":       {"", defaultIndent},
+	} {
+		if got := detectIndent([]byte(tc.data)); got != tc.want {
+			t.Fatalf("detectIndent(%s) = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+// A mutation must not reformat the file. dotfiles runs biome, which indents JSON
+// with tabs; hardcoding two spaces turned every edit into a whole-file diff.
+func TestWriteManifestPreservesIndent(t *testing.T) {
+	dir := t.TempDir()
+	mf := filepath.Join(dir, ".manifest.json")
+
+	m := &Manifest{
+		Version:     1,
+		Directories: []DirEntry{{Name: "shared", Path: "~/.agents/skills"}},
+		Skills: []SkillEntry{
+			{Name: "drawio", Target: "shared", Source: SourceEntry{Repo: "a/b", Ref: "main", Path: "skills/drawio"}},
+			{Name: "docx", Target: "shared", Source: SourceEntry{Repo: "a/c", Ref: "main", Path: "skills/docx"}},
+		},
+	}
+	if err := writeManifest(mf, m); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-indent with tabs, the way the repo's JSON formatter would.
+	spaced, err := os.ReadFile(mf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tabbed, err := json.MarshalIndent(m, "", "\t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tabbed = append(tabbed, '\n')
+	if err := os.WriteFile(mf, tabbed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(spaced, tabbed) {
+		t.Fatal("fixture is not actually re-indented")
+	}
+
+	// Drop one skill, the smallest possible mutation.
+	reloaded, err := readManifest(mf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded.Skills = reloaded.Skills[:1]
+	if err := writeManifest(mf, reloaded); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := os.ReadFile(mf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(after, []byte("\n\t\"version\"")) {
+		t.Fatalf("tab indentation was rewritten:\n%s", after)
+	}
+	if bytes.Contains(after, []byte("\n  \"version\"")) {
+		t.Fatalf("manifest was reformatted to spaces:\n%s", after)
+	}
+	if bytes.Contains(after, []byte("docx")) {
+		t.Fatal("removed skill still present")
+	}
+}
+
+func TestWriteLockPreservesIndent(t *testing.T) {
+	dir := t.TempDir()
+	lf := filepath.Join(dir, ".lock.json")
+
+	l := &LockFile{
+		Version: 1,
+		Skills: map[string]LockSkill{
+			"drawio": {Commit: "abc123", Path: "skills/drawio"},
+			"docx":   {Commit: "def456", Path: "skills/docx"},
+		},
+	}
+	tabbed, err := json.MarshalIndent(l, "", "\t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lf, tabbed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := readLock(lf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(reloaded.Skills, "docx")
+	if err := writeLock(lf, reloaded); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := os.ReadFile(lf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(after, []byte("\n\t\"version\"")) {
+		t.Fatalf("tab indentation was rewritten:\n%s", after)
+	}
+	if bytes.Contains(after, []byte("docx")) {
+		t.Fatal("removed lock entry still present")
+	}
+}
+
+// New files have no formatting to preserve, so they must land on the default.
+func TestWriteManifestNewFileUsesDefaultIndent(t *testing.T) {
+	dir := t.TempDir()
+	mf := filepath.Join(dir, ".manifest.json")
+
+	if err := writeManifest(mf, &Manifest{Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(mf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("\n  \"version\"")) {
+		t.Fatalf("expected default two-space indent, got:\n%s", data)
 	}
 }
 

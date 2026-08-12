@@ -1183,7 +1183,10 @@ func cmdFmt(m *Manifest, manifestPath string, dryRun bool) {
 		os.Exit(1)
 	}
 
-	canonical, err := json.MarshalIndent(m, "", "  ")
+	// Preserve the file's own indentation; canonical means stable key order and
+	// spacing, not a fixed indent unit. Forcing two spaces here would fight the
+	// repo's JSON formatter on every run.
+	canonical, err := json.MarshalIndent(m, "", detectIndent(orig))
 	if err != nil {
 		fail("marshal manifest: %v", err)
 		os.Exit(1)

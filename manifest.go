@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -259,10 +260,44 @@ func readManifest(path string) (*Manifest, error) {
 	return &m, nil
 }
 
-// writeManifest serializes the manifest with deterministic formatting.
-// Output is idempotent: writing the same data twice produces identical bytes.
+// defaultIndent is used for new files and when existing formatting can't be detected.
+const defaultIndent = "  "
+
+// detectIndent returns the indentation unit of an existing JSON document. Callers
+// hardcoding two spaces made every mutation rewrite files that are indented
+// differently (dotfiles runs biome, which indents JSON with tabs), burying a
+// one-line change in a whole-file diff.
+func detectIndent(data []byte) string {
+	nl := bytes.IndexByte(data, '\n')
+	if nl < 0 {
+		return defaultIndent
+	}
+	rest := data[nl+1:]
+	n := 0
+	for n < len(rest) && (rest[n] == ' ' || rest[n] == '\t') {
+		n++
+	}
+	if n == 0 {
+		return defaultIndent
+	}
+	return string(rest[:n])
+}
+
+// fileIndent detects the indentation of the file at path, falling back to
+// defaultIndent when it is absent or unreadable.
+func fileIndent(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return defaultIndent
+	}
+	return detectIndent(data)
+}
+
+// writeManifest serializes the manifest with deterministic formatting, preserving
+// the file's existing indentation. Output is idempotent: writing the same data
+// twice produces identical bytes.
 func writeManifest(path string, m *Manifest) error {
-	data, err := json.MarshalIndent(m, "", "  ")
+	data, err := json.MarshalIndent(m, "", fileIndent(path))
 	if err != nil {
 		return fmt.Errorf("encode manifest: %w", err)
 	}
@@ -288,11 +323,15 @@ func readLock(path string) (*LockFile, error) {
 	return &l, nil
 }
 
+// writeLock mirrors writeManifest: preserve the file's existing indentation and
+// emit a trailing newline, so a single entry change does not reformat the whole
+// lock or trip POSIX text-file conventions.
 func writeLock(path string, l *LockFile) error {
-	data, err := json.MarshalIndent(l, "", "  ")
+	data, err := json.MarshalIndent(l, "", fileIndent(path))
 	if err != nil {
 		return fmt.Errorf("encode lock: %w", err)
 	}
+	data = append(data, '\n')
 	return atomicWriteFile(path, data, 0o644)
 }
 
