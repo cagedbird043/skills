@@ -3323,7 +3323,7 @@ func TestCmdDoctor_ReportsCommonDriftStates(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		cmdDoctor(m, lock, manifestPath, false, false)
+		cmdDoctor(m, lock, manifestPath, false, false, false)
 	})
 
 	for _, want := range []string{
@@ -3395,7 +3395,7 @@ func TestCmdDoctor_CleanState(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		cmdDoctor(m, lock, manifestPath, false, false)
+		cmdDoctor(m, lock, manifestPath, false, false, false)
 	})
 	if !strings.Contains(out, "no drift") {
 		t.Fatalf("expected clean doctor output, got:\n%s", out)
@@ -3448,7 +3448,7 @@ func TestCmdDoctor_SeparatesTmpLeftoversFromUnmanaged(t *testing.T) {
 	m, lock := loadDoctorFixture(t, manifestPath)
 
 	out := captureStdout(t, func() {
-		cmdDoctor(m, lock, manifestPath, false, false)
+		cmdDoctor(m, lock, manifestPath, false, false, false)
 	})
 
 	for _, want := range []string{
@@ -3495,7 +3495,7 @@ func TestCmdDoctor_PruneTmpRemovesOnlyLeftovers(t *testing.T) {
 	m, lock := loadDoctorFixture(t, manifestPath)
 
 	out := captureStdout(t, func() {
-		cmdDoctor(m, lock, manifestPath, true, false)
+		cmdDoctor(m, lock, manifestPath, true, false, false)
 	})
 	if !strings.Contains(out, "removed") {
 		t.Fatalf("expected prune output, got:\n%s", out)
@@ -3527,7 +3527,7 @@ func TestCmdDoctor_PruneTmpDryRunKeepsDisk(t *testing.T) {
 	m, lock := loadDoctorFixture(t, manifestPath)
 
 	out := captureStdout(t, func() {
-		cmdDoctor(m, lock, manifestPath, true, true)
+		cmdDoctor(m, lock, manifestPath, true, true, false)
 	})
 	if !strings.Contains(out, "would remove") {
 		t.Fatalf("expected dry-run prune output, got:\n%s", out)
@@ -3538,6 +3538,97 @@ func TestCmdDoctor_PruneTmpDryRunKeepsDisk(t *testing.T) {
 	for _, kept := range []string{".ui-aesthetics.tmp-1240448978", ".docx.old-99"} {
 		if _, err := os.Stat(filepath.Join(sharedDir, kept)); err != nil {
 			t.Fatalf("dry-run must keep %s: %v", kept, err)
+		}
+	}
+}
+
+func decodeDoctorJSON(t *testing.T, out string) doctorJSONReport {
+	t.Helper()
+	var report doctorJSONReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("doctor JSON is invalid: %v\n%s", err, out)
+	}
+	return report
+}
+
+func TestCmdDoctor_JSONReportsMachineReadableStatuses(t *testing.T) {
+	manifestPath, _ := doctorTmpFixture(t)
+	m, lock := loadDoctorFixture(t, manifestPath)
+
+	out := captureStdout(t, func() {
+		cmdDoctor(m, lock, manifestPath, false, false, true)
+	})
+	for _, human := range []string{"Doctor:", "No drift", "Reconcile local state", "\x1b["} {
+		if strings.Contains(out, human) {
+			t.Fatalf("JSON output contains human text %q:\n%s", human, out)
+		}
+	}
+	report := decodeDoctorJSON(t, out)
+	if report.ManifestPath != manifestPath || report.LockPath != getLockPath(manifestPath) {
+		t.Fatalf("paths = %q, %q", report.ManifestPath, report.LockPath)
+	}
+	if report.SkillCount != 1 {
+		t.Fatalf("skill_count = %d, want 1", report.SkillCount)
+	}
+	statusByName := make(map[string]string, len(report.Items))
+	for _, item := range report.Items {
+		statusByName[item.Name] = item.Status
+	}
+	for name, want := range map[string]string{
+		"anysearch":                     "ok",
+		"lark-im":                       "unmanaged",
+		".ui-aesthetics.tmp-1240448978": statusTmpLeftover,
+	} {
+		if got := statusByName[name]; got != want {
+			t.Fatalf("JSON status for %s = %q, want %q", name, got, want)
+		}
+	}
+	if report.Counts.OK != 1 || report.Counts.Drift != 3 {
+		t.Fatalf("counts = %+v, want 1 ok and 3 drift", report.Counts)
+	}
+}
+
+func TestCmdDoctor_JSONPruneTmpDryRun(t *testing.T) {
+	manifestPath, sharedDir := doctorTmpFixture(t)
+	m, lock := loadDoctorFixture(t, manifestPath)
+	out := captureStdout(t, func() {
+		cmdDoctor(m, lock, manifestPath, true, true, true)
+	})
+	report := decodeDoctorJSON(t, out)
+	if !report.DryRun || len(report.Pruned) != 2 {
+		t.Fatalf("dry-run report = %+v", report)
+	}
+	for _, item := range report.Pruned {
+		if item.Action != "would_remove" {
+			t.Fatalf("pruned action = %q, want would_remove", item.Action)
+		}
+		if _, err := os.Stat(filepath.Join(sharedDir, item.Name)); err != nil {
+			t.Fatalf("dry-run removed %s: %v", item.Name, err)
+		}
+	}
+}
+
+func TestCmdDoctor_JSONPruneTmpRemovesOnlyLeftovers(t *testing.T) {
+	manifestPath, sharedDir := doctorTmpFixture(t)
+	m, lock := loadDoctorFixture(t, manifestPath)
+	out := captureStdout(t, func() {
+		cmdDoctor(m, lock, manifestPath, true, false, true)
+	})
+	report := decodeDoctorJSON(t, out)
+	if report.DryRun || len(report.Pruned) != 2 {
+		t.Fatalf("prune report = %+v", report)
+	}
+	for _, item := range report.Pruned {
+		if item.Action != "removed" {
+			t.Fatalf("pruned action = %q, want removed", item.Action)
+		}
+		if _, err := os.Stat(filepath.Join(sharedDir, item.Name)); !os.IsNotExist(err) {
+			t.Fatalf("leftover %s still exists: %v", item.Name, err)
+		}
+	}
+	for _, kept := range []string{"anysearch", "lark-im"} {
+		if _, err := os.Stat(filepath.Join(sharedDir, kept, "SKILL.md")); err != nil {
+			t.Fatalf("JSON prune touched %s: %v", kept, err)
 		}
 	}
 }

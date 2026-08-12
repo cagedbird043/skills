@@ -88,6 +88,9 @@ skills add DietrichGebert/ponytail skills/ponytail --target omp
 # Report manifest/lock/disk/mirror drift
 skills doctor
 
+# Emit the same doctor report as machine-readable JSON
+skills doctor --json
+
 # Delete leftovers from interrupted installs (.<skill>.tmp-*/.old-*)
 skills doctor --prune-tmp
 
@@ -149,6 +152,7 @@ recording the exact commit of each installed skill.
 | `skills install [name]` | Legacy alias for `sync` |
 | `skills update [name]` | Check remote commits, update changed skills |
 | `skills doctor` | Report active manifest path plus manifest/lock/disk/mirror drift |
+| `skills doctor --json` | Emit the doctor report as one machine-readable JSON document |
 | `skills doctor --prune-tmp` | Same report, then delete interrupted-install leftovers |
 | `skills info <name>` | Show source, path, commit, and disk location |
 | `skills completion <shell>` | Generate shell completion (zsh, bash) |
@@ -184,6 +188,7 @@ records, and what is actually on disk. Each row names how they disagree.
 | `-q, --quiet` | Suppress normal output, errors only |
 | `-n, --dry-run` | Show what would be done without doing it |
 | `--prune-tmp` | With `doctor`: delete interrupted-install leftovers |
+| `--json` | With `doctor`: output one JSON document; combines with `--prune-tmp` and `--dry-run` |
 | `--version` | Print version |
 
 ## Environment

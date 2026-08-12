@@ -1,14 +1,46 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-func cmdDoctor(m *Manifest, lock *LockFile, manifestPath string, pruneTmp, dryRun bool) {
+type doctorJSONItem struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Detail string `json:"detail"`
+}
+
+type doctorJSONCounts struct {
+	OK    int `json:"ok"`
+	Drift int `json:"drift"`
+}
+
+type doctorJSONPruned struct {
+	Name      string `json:"name"`
+	Directory string `json:"directory"`
+	Action    string `json:"action"`
+}
+
+type doctorJSONReport struct {
+	ManifestPath string             `json:"manifest_path"`
+	LockPath     string             `json:"lock_path"`
+	SkillCount   int                `json:"skill_count"`
+	Items        []doctorJSONItem   `json:"items"`
+	Counts       doctorJSONCounts   `json:"counts"`
+	DryRun       bool               `json:"dry_run"`
+	Pruned       []doctorJSONPruned `json:"pruned"`
+}
+
+func cmdDoctor(m *Manifest, lock *LockFile, manifestPath string, pruneTmp, dryRun, jsonOutput bool) {
 	items := collectDoctorItems(m, lock)
+	if jsonOutput {
+		printDoctorJSON(m, manifestPath, items, pruneTmp, dryRun)
+		return
+	}
 
 	fmt.Printf("  %s: %s\n", bold("manifest"), manifestPath)
 	fmt.Printf("  %s: %s\n", bold("lock"), getLockPath(manifestPath))
@@ -55,6 +87,34 @@ func cmdDoctor(m *Manifest, lock *LockFile, manifestPath string, pruneTmp, dryRu
 		fmt.Println()
 		pruneTmpLeftovers(m, dryRun)
 	}
+}
+
+func printDoctorJSON(m *Manifest, manifestPath string, items []auditItem, pruneTmp, dryRun bool) {
+	report := doctorJSONReport{
+		ManifestPath: manifestPath,
+		LockPath:     getLockPath(manifestPath),
+		SkillCount:   len(m.Skills),
+		Items:        make([]doctorJSONItem, 0, len(items)),
+		DryRun:       dryRun,
+		Pruned:       make([]doctorJSONPruned, 0),
+	}
+	for _, item := range items {
+		report.Items = append(report.Items, doctorJSONItem(item))
+		if item.Status == "ok" {
+			report.Counts.OK++
+		} else {
+			report.Counts.Drift++
+		}
+	}
+	if pruneTmp {
+		report.Pruned = pruneTmpLeftoversJSON(m, dryRun)
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		warn("doctor JSON: %v", err)
+		return
+	}
+	fmt.Println(string(data))
 }
 
 func doctorStatusLabel(status string) string {
@@ -352,4 +412,21 @@ func pruneTmpLeftovers(m *Manifest, dryRun bool) {
 		}
 		fmt.Printf("  %-16s %s\n", green("removed"), label)
 	}
+}
+
+func pruneTmpLeftoversJSON(m *Manifest, dryRun bool) []doctorJSONPruned {
+	leftovers := collectTmpLeftovers(m)
+	pruned := make([]doctorJSONPruned, 0, len(leftovers))
+	for _, l := range leftovers {
+		action := "would_remove"
+		if !dryRun {
+			if err := os.RemoveAll(l.path); err != nil {
+				warn("prune %s: %v", l.path, err)
+				continue
+			}
+			action = "removed"
+		}
+		pruned = append(pruned, doctorJSONPruned{Name: l.name, Directory: l.dir, Action: action})
+	}
+	return pruned
 }

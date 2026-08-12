@@ -187,6 +187,7 @@ func usage() {
   -n, --dry-run          Show what would be done without doing it
   -k, --keep-manifest    With remove: keep the manifest entry
       --prune-tmp        With doctor: delete interrupted-install leftovers
+      --json             With doctor: output one JSON document
       --version          Print version
 
 %s:
@@ -211,6 +212,7 @@ func usage() {
   skills remove drawio --dry-run
   skills move caveman shared
   skills doctor
+  skills doctor --json
   skills doctor --prune-tmp
   skills doctor --prune-tmp --dry-run
   skills sync --dry-run
@@ -247,6 +249,7 @@ func main() {
 	yes := false
 	keepManifest := false
 	pruneTmp := false
+	jsonOutput := false
 
 	for i := 1; i < len(os.Args); i++ {
 		arg := os.Args[i]
@@ -286,6 +289,10 @@ func main() {
 		}
 		if arg == "--prune-tmp" {
 			pruneTmp = true
+			continue
+		}
+		if arg == "--json" {
+			jsonOutput = true
 			continue
 		}
 		if arg == "--complete-names" {
@@ -364,7 +371,7 @@ func main() {
 		}
 		cmdUpdate(m, lock, manifestPath, target, dryRun, yes)
 	case "doctor":
-		cmdDoctor(m, lock, manifestPath, pruneTmp, dryRun)
+		cmdDoctor(m, lock, manifestPath, pruneTmp, dryRun, jsonOutput)
 	case "move", "retarget":
 		if len(positional) < 3 {
 			fmt.Fprintln(os.Stderr, "skills: move requires a skill name and a target directory")
@@ -473,7 +480,7 @@ _skills() {
       ;;
     doctor)
       _alternative \
-        'args: :(--prune-tmp --dry-run -n)'
+        'args: :(--json --prune-tmp --dry-run -n)'
       ;;
   esac
 }
@@ -496,7 +503,7 @@ _skills "$@"
     case "${words[1]}" in
       update) flags="$flags -y --yes" ;;
       remove) flags="$flags -k --keep-manifest" ;;
-      doctor) flags="$flags --prune-tmp" ;;
+      doctor) flags="$flags --json --prune-tmp" ;;
     esac
     COMPREPLY=($(compgen -W "$flags" -- "$cur"))
     return
