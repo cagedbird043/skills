@@ -123,6 +123,61 @@ func fetchLatestCommit(repo, ref string) (string, error) {
 	return cr.SHA, nil
 }
 
+// commitKey identifies one remote lookup. Several skills routinely share a repo
+// (anthropics/skills alone backs seven), so keying by repo+ref lets the audit
+// collapse duplicate requests.
+type commitKey struct {
+	repo string
+	ref  string
+}
+
+type commitResult struct {
+	commit string
+	err    error
+}
+
+// fetchLatestCommits resolves keys concurrently, one request per unique key.
+// The audit used to call fetchLatestCommitFn inline per skill, so wall time was
+// the sum of every round-trip. Calls go through fetchLatestCommitFn so tests
+// keep their fakes.
+func fetchLatestCommits(keys []commitKey) map[commitKey]commitResult {
+	results := make(map[commitKey]commitResult, len(keys))
+	if len(keys) == 0 {
+		return results
+	}
+
+	workers := min(4, len(keys))
+	jobs := make(chan commitKey)
+	type keyed struct {
+		key commitKey
+		res commitResult
+	}
+	out := make(chan keyed, len(keys))
+
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for k := range jobs {
+				commit, err := fetchLatestCommitFn(k.repo, k.ref)
+				out <- keyed{key: k, res: commitResult{commit: commit, err: err}}
+			}
+		}()
+	}
+	for _, k := range keys {
+		jobs <- k
+	}
+	close(jobs)
+	wg.Wait()
+	close(out)
+
+	for r := range out {
+		results[r.key] = r.res
+	}
+	return results
+}
+
 func fetchTree(repo, ref string) ([]treeEntry, error) {
 	url := fmt.Sprintf("%s/repos/%s/git/trees/%s?recursive=1", githubAPI, repo, ref)
 	resp, err := githubGET(url)

@@ -24,15 +24,15 @@ jobs:
       - run: go build -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o skills-linux-amd64 .
       - run: CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o skills-linux-arm64 .
       - run: ./skills-linux-amd64 completion zsh > _skills
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: skills-linux-amd64
           path: skills-linux-amd64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: skills-linux-arm64
           path: skills-linux-arm64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: skills-zsh-completion
           path: _skills
@@ -46,7 +46,7 @@ jobs:
           go-version: 'stable'
           cache: false
       - run: go build -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o skills-darwin-arm64 .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: skills-darwin-arm64
           path: skills-darwin-arm64
@@ -55,19 +55,19 @@ jobs:
     needs: [build-linux, build-macos-arm]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: skills-*
           merge-multiple: true
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: skills-zsh-completion
 
       - name: Checksums
         run: sha256sum skills-* _skills > checksums.txt
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             skills-*
@@ -84,12 +84,12 @@ jobs:
         with:
           path: skills-repo
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: skills-*
           merge-multiple: true
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: skills-zsh-completion
 

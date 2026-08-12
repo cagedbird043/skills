@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -686,6 +687,19 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 
 	// Check manifest skills
 	manifestNames := make(map[string]bool)
+
+	// Resolve local state for every skill first. Only locally consistent skills
+	// need a remote commit, and this loop used to issue that request inline —
+	// one serial round-trip per skill. Collecting them lets fetchLatestCommits
+	// dedupe shared repos and run the requests concurrently.
+	type pendingRemote struct {
+		skill      SkillEntry
+		lockCommit string
+	}
+	var pending []pendingRemote
+	var keys []commitKey
+	seenKey := make(map[commitKey]bool)
+
 	for _, s := range m.Skills {
 		manifestNames[s.Name] = true
 		ls, hasLock := lock.Skills[s.Name]
@@ -717,23 +731,33 @@ func cmdUpdate(m *Manifest, lock *LockFile, manifestPath, target string, dryRun,
 			items = append(items, auditItem{s.Name, "stale-disk", "lock missing, disk present"})
 			continue
 		}
-		// Locally consistent — check remote commit
-		latestCommit, err := fetchLatestCommitFn(s.Source.Repo, s.Source.Ref)
-		if err != nil {
+		// Locally consistent — reaching here guarantees hasLock, so ls.Commit is set.
+		k := commitKey{repo: s.Source.Repo, ref: s.Source.Ref}
+		if !seenKey[k] {
+			seenKey[k] = true
+			keys = append(keys, k)
+		}
+		pending = append(pending, pendingRemote{skill: s, lockCommit: ls.Commit})
+	}
+
+	remote := fetchLatestCommits(keys)
+	for _, p := range pending {
+		res := remote[commitKey{repo: p.skill.Source.Repo, ref: p.skill.Source.Ref}]
+		if res.err != nil {
 			items = append(items, auditItem{
-				s.Name, "degraded",
-				fmt.Sprintf("remote check failed: %v", err),
+				p.skill.Name, "degraded",
+				fmt.Sprintf("remote check failed: %v", res.err),
 			})
 			continue
 		}
-		if hasLock && ls.Commit != latestCommit {
+		if p.lockCommit != res.commit {
 			items = append(items, auditItem{
-				s.Name, "outdated",
-				fmt.Sprintf("commit %s..%s", ls.Commit[:min(8, len(ls.Commit))], latestCommit[:8]),
+				p.skill.Name, "outdated",
+				fmt.Sprintf("commit %s..%s", p.lockCommit[:min(8, len(p.lockCommit))], res.commit[:8]),
 			})
 			continue
 		}
-		items = append(items, auditItem{s.Name, "ok", ""})
+		items = append(items, auditItem{p.skill.Name, "ok", ""})
 	}
 
 	// Check for stale (lock has it but manifest doesn't)
@@ -905,15 +929,13 @@ func sortItems(items []auditItem) {
 		"outdated": 5, "degraded": 6, "missing": 7, "uninstalled": 8, "path-changed": 9, "stale-disk": 10,
 		"stale": 11, "unmanaged": 12, statusTmpLeftover: 13, "ok": 14,
 	}
-	for i := 0; i < len(items); i++ {
-		for j := i + 1; j < len(items); j++ {
-			oi := statusOrder[items[i].Status]
-			oj := statusOrder[items[j].Status]
-			if oi > oj || (oi == oj && items[i].Name > items[j].Name) {
-				items[i], items[j] = items[j], items[i]
-			}
+	sort.Slice(items, func(i, j int) bool {
+		oi, oj := statusOrder[items[i].Status], statusOrder[items[j].Status]
+		if oi != oj {
+			return oi < oj
 		}
-	}
+		return items[i].Name < items[j].Name
+	})
 }
 
 // cmdRemove removes one or more skills from lock, manifest, disk, and mirror symlinks.

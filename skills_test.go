@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -3644,6 +3645,119 @@ func TestIsTmpLeftoverName(t *testing.T) {
 	} {
 		if got := isTmpLeftoverName(name); got != want {
 			t.Fatalf("isTmpLeftoverName(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// Several skills share one upstream repo, so the audit must issue a single
+// request per unique repo+ref instead of one per skill.
+func TestFetchLatestCommitsDedupesByRepoAndRef(t *testing.T) {
+	var mu sync.Mutex
+	calls := make(map[string]int)
+	fetchLatestCommitFn = func(repo, ref string) (string, error) {
+		mu.Lock()
+		calls[repo+"@"+ref]++
+		mu.Unlock()
+		return "commit-" + repo + "-" + ref, nil
+	}
+	defer restoreGitHub()
+
+	keys := []commitKey{
+		{repo: "anthropics/skills", ref: "main"},
+		{repo: "mattpocock/skills", ref: "main"},
+		{repo: "JuliusBrussee/caveman", ref: "v1.8.2"},
+	}
+	got := fetchLatestCommits(keys)
+
+	if len(got) != len(keys) {
+		t.Fatalf("got %d results, want %d", len(got), len(keys))
+	}
+	for _, k := range keys {
+		res, ok := got[k]
+		if !ok {
+			t.Fatalf("missing result for %v", k)
+		}
+		if res.err != nil {
+			t.Fatalf("unexpected error for %v: %v", k, res.err)
+		}
+		if want := "commit-" + k.repo + "-" + k.ref; res.commit != want {
+			t.Fatalf("commit for %v = %q, want %q", k, res.commit, want)
+		}
+		if n := calls[k.repo+"@"+k.ref]; n != 1 {
+			t.Fatalf("repo %s@%s fetched %d times, want exactly 1", k.repo, k.ref, n)
+		}
+	}
+
+	// Same ref on a different repo, and same repo on a different ref, are
+	// distinct lookups — neither may be collapsed.
+	if got[commitKey{repo: "anthropics/skills", ref: "main"}].commit ==
+		got[commitKey{repo: "mattpocock/skills", ref: "main"}].commit {
+		t.Fatal("different repos sharing a ref must not share a result")
+	}
+}
+
+func TestFetchLatestCommitsEmptyMakesNoRequests(t *testing.T) {
+	called := false
+	fetchLatestCommitFn = func(_, _ string) (string, error) {
+		called = true
+		return "", nil
+	}
+	defer restoreGitHub()
+
+	if got := fetchLatestCommits(nil); len(got) != 0 {
+		t.Fatalf("expected empty result, got %v", got)
+	}
+	if called {
+		t.Fatal("no keys must mean no requests")
+	}
+}
+
+// A failure on one repo must be reported for that repo only, leaving the rest
+// of the audit intact.
+func TestFetchLatestCommitsIsolatesErrors(t *testing.T) {
+	fetchLatestCommitFn = func(repo, _ string) (string, error) {
+		if repo == "broken/repo" {
+			return "", fmt.Errorf("network error")
+		}
+		return "goodcommit", nil
+	}
+	defer restoreGitHub()
+
+	got := fetchLatestCommits([]commitKey{
+		{repo: "broken/repo", ref: "main"},
+		{repo: "fine/repo", ref: "main"},
+	})
+
+	if err := got[commitKey{repo: "broken/repo", ref: "main"}].err; err == nil {
+		t.Fatal("expected error for broken/repo")
+	}
+	fine := got[commitKey{repo: "fine/repo", ref: "main"}]
+	if fine.err != nil {
+		t.Fatalf("unrelated repo must succeed, got %v", fine.err)
+	}
+	if fine.commit != "goodcommit" {
+		t.Fatalf("commit = %q, want %q", fine.commit, "goodcommit")
+	}
+}
+
+// sortItems moved to sort.Slice; ordering must stay status-first then
+// alphabetical, and equal-status items must not be reordered arbitrarily.
+func TestSortItemsOrdersByStatusThenName(t *testing.T) {
+	items := []auditItem{
+		{Name: "zeta", Status: "ok"},
+		{Name: "alpha", Status: "ok"},
+		{Name: "beta", Status: "unmanaged"},
+		{Name: "gamma", Status: "outdated"},
+		{Name: "delta", Status: "invalid-target"},
+		{Name: "epsilon", Status: statusTmpLeftover},
+		{Name: "alpha2", Status: "outdated"},
+	}
+	sortItems(items)
+
+	want := []string{"delta", "alpha2", "gamma", "beta", "epsilon", "alpha", "zeta"}
+	for i, name := range want {
+		if items[i].Name != name {
+			t.Fatalf("position %d = %q, want %q (full order: %v)", i, items[i].Name, name, items)
 		}
 	}
 }
