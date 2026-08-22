@@ -130,8 +130,8 @@ A complete example lives at [`examples/manifest.json`](examples/manifest.json):
 }
 ```
 
-Run `skills sync`. A `.lock.json` will be created next to your manifest
-recording the exact commit of each installed skill.
+Run `skills sync`. A `.lock.json` will be created next to your manifest,
+recording each installed skill's exact commit and normalized content hash.
 
 | Field | Description |
 |-------|-------------|
@@ -148,7 +148,7 @@ recording the exact commit of each installed skill.
 | Command | Description |
 |---------|-------------|
 | `skills list` | List all skills with installation status |
-| `skills sync [name]` | Reconcile manifest + lock to disk (zero API calls if locked) |
+| `skills sync [name]` | Reconcile manifest + lock to disk; restores modified locked content. `--dry-run` reports each item as `install`, `update`, `restore`, `remove`, or `unchanged`. |
 | `skills install [name]` | Legacy alias for `sync` |
 | `skills update [name]` | Check remote commits, update changed skills |
 | `skills doctor` | Report active manifest path plus manifest/lock/disk/mirror drift |
@@ -159,17 +159,19 @@ recording the exact commit of each installed skill.
 
 ## Doctor statuses
 
-`skills doctor` compares three things: what the manifest declares, what the lock
-records, and what is actually on disk. Each row names how they disagree.
+`skills doctor` compares the manifest, lock, normalized installed content, and
+mirrors. Each row names how they disagree.
 
 | Status | Meaning | What to do |
 |--------|---------|------------|
 | `ok` | Manifest, lock, and disk agree | Nothing |
 | `uninstalled` | Declared, but never installed | `skills sync` |
 | `missing` | Locked, but files are gone from disk | `skills sync` |
-| `stale-disk` | On disk, but no lock entry | `skills sync` |
+| `stale-disk` | On disk without a lock entry, or installed commit marker differs from the lock | `skills sync` |
 | `stale` | In the lock, but no longer declared | `skills sync` |
 | `path-changed` | Manifest points at a different source path than the lock | `skills sync` |
+| `modified` | Installed files or modes differ from the locked content hash | `skills sync` |
+| `unverified` | Legacy lock has no installed content hash | `skills sync` once to restore and record it |
 | `outdated` | Upstream has newer commits | `skills update` |
 | `degraded` | Could not reach GitHub to check | Retry later |
 | `unmanaged` | A real skill on disk that `skills` did not install — typically copied in by hand or by another tool | Keep it, or `skills add` to manage it. Never removed automatically |
@@ -179,6 +181,9 @@ records, and what is actually on disk. Each row names how they disagree.
 | `mirror-wrong-link` | Mirror symlink points somewhere unexpected | `skills sync` |
 | `mirror-conflict` | A real directory sits where a mirror symlink belongs | Move it aside, then `skills sync` |
 | `mirror-stray` | Mirror symlink `skills` created now points at nothing it manages | `skills sync` |
+
+`doctor` exits `0` when clean, `2` when drift is detected, and `1` for command
+or configuration errors. The same exit behavior applies to `--json`.
 
 ## Options
 

@@ -372,7 +372,9 @@ func main() {
 		}
 		cmdUpdate(m, lock, manifestPath, target, dryRun, yes)
 	case "doctor":
-		cmdDoctor(m, lock, manifestPath, pruneTmp, dryRun, jsonOutput)
+		if code := cmdDoctor(m, lock, manifestPath, pruneTmp, dryRun, jsonOutput); code != 0 {
+			os.Exit(code)
+		}
 	case "move", "retarget":
 		if len(positional) < 3 {
 			fmt.Fprintln(os.Stderr, "skills: move requires a skill name and a target directory")
@@ -606,7 +608,8 @@ func cmdSync(cmdName string, m *Manifest, lock *LockFile, manifestPath, target s
 		}
 
 		if dryRun {
-			fmt.Printf("  %s %s (from %s/%s @ %s)\n", bold(cmdName), found.Name, found.Source.Repo, found.Source.Path, found.Source.Ref)
+			printSyncPlanItem(syncPlanForSkill(*found, lock, m.Directories))
+			printSyncMirrorPlans(m, map[string]bool{found.Name: true})
 			return
 		}
 
@@ -626,12 +629,130 @@ func cmdSync(cmdName string, m *Manifest, lock *LockFile, manifestPath, target s
 	}
 
 	if dryRun {
-		fmt.Printf("  %s all skills from lock\n", bold(cmdName))
+		for _, skill := range m.Skills {
+			printSyncPlanItem(syncPlanForSkill(skill, lock, m.Directories))
+		}
+		willInstall := make(map[string]bool, len(m.Skills))
+		for _, skill := range m.Skills {
+			willInstall[skill.Name] = true
+		}
+		printSyncMirrorPlans(m, willInstall)
 		return
 	}
 
 	results := InstallAll(m, lock, manifestPath)
 	printSummary(results)
+}
+
+type syncPlanItem struct {
+	Action string
+	Name   string
+	Detail string
+}
+
+func printSyncPlanItem(item syncPlanItem) {
+	if item.Detail == "" {
+		fmt.Printf("  %s %s\n", item.Action, item.Name)
+		return
+	}
+	fmt.Printf("  %s %s %s\n", item.Action, item.Name, dim(item.Detail))
+}
+
+func syncPlanForSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) syncPlanItem {
+	destRoot := resolveTargetPath(skill.Target, dirs)
+	if destRoot == "" {
+		return syncPlanItem{Action: "error", Name: skill.Name, Detail: fmt.Sprintf("unknown target %q", skill.Target)}
+	}
+	ls, hasLock := lock.Skills[skill.Name]
+	if !hasLock {
+		return syncPlanItem{Action: "install", Name: skill.Name}
+	}
+	if ls.Path != skill.Source.Path || (ls.SourceHash != "" && ls.SourceHash != computeSourceHash(skill.Source)) {
+		return syncPlanItem{Action: "update", Name: skill.Name, Detail: "source configuration changed"}
+	}
+	destDir := filepath.Join(expandPath(destRoot), skill.Name)
+	if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err != nil {
+		return syncPlanItem{Action: "restore", Name: skill.Name, Detail: "files missing"}
+	}
+	marker, err := os.ReadFile(filepath.Join(destDir, ".skills-commit"))
+	if err != nil || strings.TrimSpace(string(marker)) != ls.Commit {
+		return syncPlanItem{Action: "restore", Name: skill.Name, Detail: "commit marker mismatch"}
+	}
+	if ls.ContentHash == "" {
+		return syncPlanItem{Action: "restore", Name: skill.Name, Detail: "content hash missing"}
+	}
+	contentHash, err := computeInstalledContentHash(destDir)
+	if err != nil || contentHash != ls.ContentHash {
+		return syncPlanItem{Action: "restore", Name: skill.Name, Detail: "content modified"}
+	}
+	return syncPlanItem{Action: "unchanged", Name: skill.Name}
+}
+
+func printSyncMirrorPlans(m *Manifest, willInstall map[string]bool) {
+	seen := make(map[string]bool)
+	for _, item := range collectMirrorDoctorItems(m) {
+		action := "error"
+		switch item.Status {
+		case "mirror-missing":
+			action = "install"
+		case "mirror-wrong-link":
+			action = "update"
+		case "mirror-stray":
+			action = "remove"
+		}
+		seen[item.Name] = true
+		printSyncPlanItem(syncPlanItem{Action: action, Name: item.Name, Detail: item.Detail})
+	}
+
+	dirPaths := make(map[string]string, len(m.Directories))
+	for _, dir := range m.Directories {
+		dirPaths[dir.Name] = expandPath(dir.Path)
+	}
+	for _, mirror := range m.Mirrors {
+		srcDir, dstDir := dirPaths[mirror.From], dirPaths[mirror.To]
+		if srcDir == "" || dstDir == "" {
+			continue
+		}
+		for _, skill := range m.Skills {
+			if skill.Target != mirror.From || !willInstall[skill.Name] || containsString(mirror.Exclude, skill.Name) {
+				continue
+			}
+			src := filepath.Join(srcDir, skill.Name)
+			if _, err := os.Stat(filepath.Join(src, "SKILL.md")); err == nil {
+				continue // Current-source mirror state was reported above.
+			}
+			name := mirror.To + "/" + skill.Name
+			if seen[name] {
+				continue
+			}
+			dst := filepath.Join(dstDir, skill.Name)
+			info, err := os.Lstat(dst)
+			switch {
+			case os.IsNotExist(err):
+				printSyncPlanItem(syncPlanItem{Action: "install", Name: name, Detail: "mirror after skill install"})
+			case err != nil:
+				printSyncPlanItem(syncPlanItem{Action: "error", Name: name, Detail: err.Error()})
+			case info.Mode()&os.ModeSymlink == 0:
+				printSyncPlanItem(syncPlanItem{Action: "error", Name: name, Detail: "mirror destination is not a symlink"})
+			default:
+				target, readErr := os.Readlink(dst)
+				if readErr != nil {
+					printSyncPlanItem(syncPlanItem{Action: "error", Name: name, Detail: readErr.Error()})
+				} else if filepath.Clean(target) != filepath.Clean(src) {
+					printSyncPlanItem(syncPlanItem{Action: "update", Name: name, Detail: "mirror target changed"})
+				}
+			}
+		}
+	}
+}
+
+func containsString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 type auditItem struct {
@@ -926,8 +1047,8 @@ func sortItems(items []auditItem) {
 	// Non-ok first, then alphabetical
 	statusOrder := map[string]int{
 		"invalid-target": 0, "mirror-conflict": 1, "mirror-wrong-link": 2, "mirror-missing": 3, "mirror-stray": 4,
-		"outdated": 5, "degraded": 6, "missing": 7, "uninstalled": 8, "path-changed": 9, "stale-disk": 10,
-		"stale": 11, "unmanaged": 12, statusTmpLeftover: 13, "ok": 14,
+		"modified": 5, "unverified": 6, "outdated": 7, "degraded": 8, "missing": 9, "uninstalled": 10,
+		"path-changed": 11, "stale-disk": 12, "stale": 13, "unmanaged": 14, statusTmpLeftover: 15, "ok": 16,
 	}
 	sort.Slice(items, func(i, j int) bool {
 		oi, oj := statusOrder[items[i].Status], statusOrder[items[j].Status]
@@ -1172,6 +1293,7 @@ func cmdAdd(m *Manifest, lock *LockFile, manifestPath string, opts addOptions, d
 
 	// 6. Install (unless --no-install) — fail before writing manifest
 	installed := false
+	installedContentHash := ""
 	if !opts.NoInstall {
 		targetPath := resolveTargetPath(opts.Target, m.Directories)
 		if targetPath == "" {
@@ -1179,11 +1301,12 @@ func cmdAdd(m *Manifest, lock *LockFile, manifestPath string, opts addOptions, d
 			os.Exit(1)
 		}
 		destDir := filepath.Join(expandPath(targetPath), name)
-		result := InstallSkill(entry, destDir, "")
+		result := InstallSkill(entry, destDir, commit)
 		if result.Action == "failed" {
 			fail("install %s: %s", name, result.Error)
 			os.Exit(1)
 		}
+		installedContentHash = result.ContentHash
 		installed = true
 	}
 
@@ -1197,9 +1320,10 @@ func cmdAdd(m *Manifest, lock *LockFile, manifestPath string, opts addOptions, d
 	// 8. Write lock entry
 	if installed {
 		lock.Skills[name] = LockSkill{
-			Commit:     commit,
-			Path:       opts.Path,
-			SourceHash: computeSourceHash(entry.Source),
+			Commit:      commit,
+			Path:        opts.Path,
+			SourceHash:  computeSourceHash(entry.Source),
+			ContentHash: installedContentHash,
 		}
 		if err := writeLock(getLockPath(manifestPath), lock); err != nil {
 			warn("write lock: %v", err)

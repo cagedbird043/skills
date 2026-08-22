@@ -560,10 +560,15 @@ func TestInstallOneSkill_SkipsWhenLockedAndOnDisk(t *testing.T) {
 	skillDir := filepath.Join(sharedDir, "drawio")
 	os.MkdirAll(skillDir, 0o755)
 	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# drawio")
+	writeFile(t, filepath.Join(skillDir, ".skills-commit"), "abc123\n")
+	contentHash, err := computeInstalledContentHash(skillDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	lock := &LockFile{
 		Skills: map[string]LockSkill{
-			"drawio": {Commit: "abc123", Path: "skills/drawio"},
+			"drawio": {Commit: "abc123", Path: "skills/drawio", ContentHash: contentHash},
 		},
 	}
 
@@ -622,38 +627,26 @@ func TestInstallOneSkill_ReinstallsWhenLockedButDiskMissing(t *testing.T) {
 }
 
 func TestInstallOneSkill_EmptyLockWithDisk(t *testing.T) {
+	fakeGitHub()
+	defer restoreGitHub()
+
 	dir := t.TempDir()
 	sharedDir := filepath.Join(dir, "shared")
-	os.MkdirAll(sharedDir, 0o755)
+	writeFile(t, filepath.Join(sharedDir, "test", "SKILL.md"), "# stale")
+	lock := &LockFile{Skills: map[string]LockSkill{
+		"test": {Commit: "", Path: "skills/test"},
+	}}
 
-	skillDir := filepath.Join(sharedDir, "drawio")
-	os.MkdirAll(skillDir, 0o755)
-	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# drawio")
-
-	// Lock exists but commit is empty — stale from older version
-	lock := &LockFile{
-		Skills: map[string]LockSkill{
-			"drawio": {Commit: "", Path: "skills/drawio"},
-		},
-	}
-
-	m := &Manifest{
-		Directories: []DirEntry{
-			{Name: "shared", Path: sharedDir},
-		},
-	}
-
-	result, ls := installOneSkill(
-		SkillEntry{Name: "drawio", Target: "shared", Source: SourceEntry{Repo: "a/b", Path: "skills/drawio"}},
-		lock, m.Directories,
+	result, updatedLock := installOneSkill(
+		SkillEntry{Name: "test", Target: "shared", Source: SourceEntry{Repo: "fake/repo", Ref: "main", Path: "skills/test"}},
+		lock, []DirEntry{{Name: "shared", Path: sharedDir}},
 	)
 
-	// Should skip (disk has SKILL.md) and NOT fill commit
-	if result.Action != "ok" || result.Error != "already installed" {
-		t.Fatalf("expected skip, got %+v", result)
+	if result.Action != "ok" || result.Error == "already installed" {
+		t.Fatalf("expected commitless lock to be reinstalled, got %+v", result)
 	}
-	if ls != nil {
-		t.Fatal("should NOT fill commit for empty lock (would cause staleness)")
+	if updatedLock == nil || updatedLock.Commit == "" || updatedLock.ContentHash == "" {
+		t.Fatalf("expected migrated lock, got %+v", updatedLock)
 	}
 }
 
@@ -700,10 +693,14 @@ func TestUpdateOneSkill_SkipsWhenPathAndCommitMatch_Integration(t *testing.T) {
 	skillDir := filepath.Join(sharedDir, "test")
 	os.MkdirAll(skillDir, 0o755)
 	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# test")
+	contentHash, err := computeInstalledContentHash(skillDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	lock := &LockFile{
 		Skills: map[string]LockSkill{
-			"test": {Commit: "fakecommit1234567890123456789012345678901234", Path: "skills/test"},
+			"test": {Commit: "fakecommit1234567890123456789012345678901234", Path: "skills/test", ContentHash: contentHash},
 		},
 	}
 
@@ -2609,7 +2606,7 @@ func TestSourceHash_ChangeTriggersReinstall(t *testing.T) {
 	source2 := SourceEntry{Repo: "a/b", Ref: "main", Path: "skills/new-path"}
 
 	// Install with source1
-	InstallSkill(SkillEntry{Name: "test-skill", Target: "shared", Source: source1}, skillDir, "")
+	installed := InstallSkill(SkillEntry{Name: "test-skill", Target: "shared", Source: source1}, skillDir, "")
 	// Write matching commit marker so the lock check passes
 	os.WriteFile(filepath.Join(skillDir, ".skills-commit"), []byte("fakecommit1234567890123456789012345678901234\n"), 0o644)
 
@@ -2618,9 +2615,10 @@ func TestSourceHash_ChangeTriggersReinstall(t *testing.T) {
 		Version: 1,
 		Skills: map[string]LockSkill{
 			"test-skill": {
-				Commit:     "fakecommit1234567890123456789012345678901234",
-				Path:       "skills/test",
-				SourceHash: computeSourceHash(source1),
+				Commit:      "fakecommit1234567890123456789012345678901234",
+				Path:        "skills/test",
+				SourceHash:  computeSourceHash(source1),
+				ContentHash: installed.ContentHash,
 			},
 		},
 	}
@@ -2840,7 +2838,7 @@ func TestInstallSkill_UnknownSourceType(t *testing.T) {
 	}
 }
 
-func TestSourceHash_EmptyLockFallback(t *testing.T) {
+func TestContentHash_LegacyLockRestoresPinnedContent(t *testing.T) {
 	dir := t.TempDir()
 	sharedDir := filepath.Join(dir, "shared")
 	skillDir := filepath.Join(sharedDir, "test-skill")
@@ -2867,14 +2865,17 @@ func TestSourceHash_EmptyLockFallback(t *testing.T) {
 		},
 	}
 
-	// Should skip using old logic (no SourceHash check)
-	r, _ := installOneSkill(
+	// A legacy lock without hashes is restored once from its pinned commit.
+	r, updatedLock := installOneSkill(
 		SkillEntry{Name: "test-skill", Target: "shared", Source: source},
 		lock,
 		[]DirEntry{{Name: "shared", Path: sharedDir}},
 	)
-	if r.Action != "ok" || r.Error != "already installed" {
-		t.Fatalf("expected skip with old lock, got %+v", r)
+	if r.Action != "ok" || r.Error == "already installed" {
+		t.Fatalf("expected restore with old lock, got %+v", r)
+	}
+	if updatedLock == nil || updatedLock.ContentHash == "" {
+		t.Fatalf("expected migrated content hash, got %+v", updatedLock)
 	}
 }
 
@@ -3379,6 +3380,14 @@ func TestCmdDoctor_CleanState(t *testing.T) {
 	})
 
 	writeFile(t, filepath.Join(sharedDir, "anysearch", "SKILL.md"), "# anysearch\n")
+	writeFile(t, filepath.Join(sharedDir, "anysearch", ".skills-commit"), "aaaaaaaaaaaaaaaa\n")
+	contentHash, err := computeInstalledContentHash(filepath.Join(sharedDir, "anysearch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, getLockPath(manifestPath), LockFile{Version: 1, Skills: map[string]LockSkill{
+		"anysearch": {Commit: "aaaaaaaaaaaaaaaa", Path: "skills/anysearch", ContentHash: contentHash},
+	}})
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -3421,6 +3430,14 @@ func doctorTmpFixture(t *testing.T) (string, string) {
 	})
 
 	writeFile(t, filepath.Join(sharedDir, "anysearch", "SKILL.md"), "# anysearch\n")
+	writeFile(t, filepath.Join(sharedDir, "anysearch", ".skills-commit"), "aaaaaaaaaaaaaaaa\n")
+	contentHash, err := computeInstalledContentHash(filepath.Join(sharedDir, "anysearch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, getLockPath(manifestPath), LockFile{Version: 1, Skills: map[string]LockSkill{
+		"anysearch": {Commit: "aaaaaaaaaaaaaaaa", Path: "skills/anysearch", ContentHash: contentHash},
+	}})
 	writeFile(t, filepath.Join(sharedDir, "lark-im", "SKILL.md"), "# hand-placed\n")
 	// Died mid-download: no SKILL.md yet.
 	if err := os.MkdirAll(filepath.Join(sharedDir, ".ui-aesthetics.tmp-1240448978"), 0o755); err != nil {
@@ -3631,6 +3648,161 @@ func TestCmdDoctor_JSONPruneTmpRemovesOnlyLeftovers(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(sharedDir, kept, "SKILL.md")); err != nil {
 			t.Fatalf("JSON prune touched %s: %v", kept, err)
 		}
+	}
+}
+
+func TestContentHashDetectsInstalledFileChanges(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "SKILL.md"), "# skill\n")
+	writeFile(t, filepath.Join(dir, "scripts", "run.sh"), "#!/bin/sh\n")
+
+	before, err := computeInstalledContentHash(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, ".skills-commit"), "abc123\n")
+	afterMarker, err := computeInstalledContentHash(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != afterMarker {
+		t.Fatal("commit marker must not affect installed content hash")
+	}
+
+	writeFile(t, filepath.Join(dir, "SKILL.md"), "# locally modified\n")
+	afterEdit, err := computeInstalledContentHash(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == afterEdit {
+		t.Fatal("content edit did not change installed content hash")
+	}
+}
+
+func TestInstallOneSkillRestoresModifiedLockedContent(t *testing.T) {
+	fakeGitHub()
+	defer restoreGitHub()
+
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	skillDir := filepath.Join(sharedDir, "test")
+	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# SKILL.md")
+	writeFile(t, filepath.Join(skillDir, "README.md"), "# README.md")
+	expectedHash, err := computeInstalledContentHash(skillDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(skillDir, ".skills-commit"), "fakecommit1234567890123456789012345678901234\n")
+	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# locally modified")
+
+	lock := &LockFile{Skills: map[string]LockSkill{
+		"test": {
+			Commit:      "fakecommit1234567890123456789012345678901234",
+			Path:        "skills/test",
+			SourceHash:  computeSourceHash(SourceEntry{Repo: "fake/repo", Ref: "main", Path: "skills/test"}),
+			ContentHash: expectedHash,
+		},
+	}}
+	skill := SkillEntry{Name: "test", Target: "shared", Source: SourceEntry{Repo: "fake/repo", Ref: "main", Path: "skills/test"}}
+
+	result, updatedLock := installOneSkill(skill, lock, []DirEntry{{Name: "shared", Path: sharedDir}})
+	if result.Action != "ok" || result.Error == "already installed" {
+		t.Fatalf("modified content was not restored: %+v", result)
+	}
+	if updatedLock == nil || updatedLock.ContentHash != expectedHash {
+		t.Fatalf("restored lock hash = %+v, want %s", updatedLock, expectedHash)
+	}
+	data, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "# SKILL.md" {
+		t.Fatalf("SKILL.md was not restored: %q", data)
+	}
+}
+
+func TestDoctorDetectsModifiedInstalledContent(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	skillDir := filepath.Join(sharedDir, "caveman")
+	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# original\n")
+	contentHash, err := computeInstalledContentHash(skillDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(skillDir, ".skills-commit"), "abc123\n")
+	writeFile(t, filepath.Join(skillDir, "SKILL.md"), "# modified\n")
+
+	m := &Manifest{Directories: []DirEntry{{Name: "shared", Path: sharedDir}}, Skills: []SkillEntry{{
+		Name: "caveman", Target: "shared", Source: SourceEntry{Repo: "r/c", Ref: "main", Path: "skills/caveman"},
+	}}}
+	lock := &LockFile{Skills: map[string]LockSkill{"caveman": {
+		Commit: "abc123", Path: "skills/caveman", SourceHash: computeSourceHash(m.Skills[0].Source), ContentHash: contentHash,
+	}}}
+
+	items := collectDoctorItems(m, lock)
+	if len(items) != 1 || items[0].Status != "modified" {
+		t.Fatalf("doctor items = %+v, want modified", items)
+	}
+	if code := cmdDoctor(m, lock, filepath.Join(dir, ".manifest.json"), false, false, true); code != exitDoctorDrift {
+		t.Fatalf("doctor exit code = %d, want %d", code, exitDoctorDrift)
+	}
+}
+
+func TestSyncDryRunReportsPerSkillActions(t *testing.T) {
+	dir := t.TempDir()
+	sharedDir := filepath.Join(dir, "shared")
+	claudeDir := filepath.Join(dir, "claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(sharedDir, "removed"), filepath.Join(claudeDir, "removed")); err != nil {
+		t.Fatal(err)
+	}
+	source := SourceEntry{Repo: "r/s", Ref: "main", Path: "skills/test"}
+	for _, name := range []string{"unchanged", "restore", "update"} {
+		writeFile(t, filepath.Join(sharedDir, name, "SKILL.md"), "# "+name+"\n")
+		writeFile(t, filepath.Join(sharedDir, name, ".skills-commit"), "abc123\n")
+	}
+	unchangedHash, err := computeInstalledContentHash(filepath.Join(sharedDir, "unchanged"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreHash, err := computeInstalledContentHash(filepath.Join(sharedDir, "restore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(sharedDir, "restore", "SKILL.md"), "# modified\n")
+
+	m := &Manifest{
+		Directories: []DirEntry{{Name: "shared", Path: sharedDir}, {Name: "claude", Path: claudeDir}},
+		Mirrors:     []MirrorEntry{{From: "shared", To: "claude"}},
+		Skills: []SkillEntry{
+			{Name: "install", Target: "shared", Source: source},
+			{Name: "restore", Target: "shared", Source: source},
+			{Name: "unchanged", Target: "shared", Source: source},
+			{Name: "update", Target: "shared", Source: source},
+		},
+	}
+	lock := &LockFile{Skills: map[string]LockSkill{
+		"restore":   {Commit: "abc123", Path: source.Path, SourceHash: computeSourceHash(source), ContentHash: restoreHash},
+		"unchanged": {Commit: "abc123", Path: source.Path, SourceHash: computeSourceHash(source), ContentHash: unchangedHash},
+		"update":    {Commit: "abc123", Path: "skills/old", SourceHash: computeSourceHash(source), ContentHash: unchangedHash},
+	}}
+
+	out := captureStdout(t, func() {
+		cmdSync("sync", m, lock, filepath.Join(dir, ".manifest.json"), "", true)
+	})
+	for _, want := range []string{"install", "restore", "unchanged", "update"} {
+		if !strings.Contains(out, want+" "+want) {
+			t.Fatalf("sync dry-run missing %q action:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "remove claude/removed") {
+		t.Fatalf("sync dry-run missing remove action:\n%s", out)
+	}
+	if !strings.Contains(out, "install claude/install") {
+		t.Fatalf("sync dry-run missing prospective mirror install:\n%s", out)
 	}
 }
 

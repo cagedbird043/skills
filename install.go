@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -250,9 +251,79 @@ func downloadFile(repo, ref, filePath string) ([]byte, error) {
 
 // InstallResult reports what happened with a single skill.
 type InstallResult struct {
-	Name   string
-	Action string // "ok", "updated", "failed"
-	Error  string
+	Name        string
+	Action      string // "ok", "updated", "failed"
+	Error       string
+	ContentHash string
+}
+
+// computeInstalledContentHash hashes the complete installed tree independent of
+// traversal order and timestamps. The commit marker is installation metadata,
+// not source content, so it is deliberately excluded.
+func computeInstalledContentHash(root string) (string, error) {
+	paths := make([]string, 0)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if filepath.ToSlash(rel) == ".skills-commit" {
+			return nil
+		}
+		paths = append(paths, path)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	sort.Strings(paths)
+
+	h := sha256.New()
+	for _, path := range paths {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return "", err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return "", err
+		}
+		rel = filepath.ToSlash(rel)
+		switch {
+		case info.IsDir():
+			fmt.Fprintf(h, "d\x00%s\x00%o\x00", rel, info.Mode().Perm())
+		case info.Mode()&os.ModeSymlink != 0:
+			target, err := os.Readlink(path)
+			if err != nil {
+				return "", err
+			}
+			fmt.Fprintf(h, "l\x00%s\x00%d\x00%s\x00", rel, len(target), target)
+		case info.Mode().IsRegular():
+			fmt.Fprintf(h, "f\x00%s\x00%o\x00%d\x00", rel, info.Mode().Perm(), info.Size())
+			f, err := os.Open(path)
+			if err != nil {
+				return "", err
+			}
+			_, copyErr := io.Copy(h, f)
+			closeErr := f.Close()
+			if copyErr != nil {
+				return "", copyErr
+			}
+			if closeErr != nil {
+				return "", closeErr
+			}
+			h.Write([]byte{0})
+		default:
+			return "", fmt.Errorf("unsupported installed file type: %s", path)
+		}
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallResult {
@@ -380,6 +451,12 @@ func InstallSkill(skill SkillEntry, destDir string, refOverride string) InstallR
 	if _, err := os.Stat(filepath.Join(tmpDir, "SKILL.md")); err != nil {
 		r.Action = "failed"
 		r.Error = fmt.Sprintf("SKILL.md missing after download (%d files ok, %d failed)", files, failed)
+		return r
+	}
+	r.ContentHash, err = computeInstalledContentHash(tmpDir)
+	if err != nil {
+		r.Action = "failed"
+		r.Error = fmt.Sprintf("hash installed content: %v", err)
 		return r
 	}
 
@@ -515,6 +592,12 @@ func installSkillFiles(r InstallResult, skill SkillEntry, destDir string, ref st
 		r.Error = "SKILL.md missing after download"
 		return r
 	}
+	r.ContentHash, err = computeInstalledContentHash(tmpDir)
+	if err != nil {
+		r.Action = "failed"
+		r.Error = fmt.Sprintf("hash installed content: %v", err)
+		return r
+	}
 
 	// Transactional replace: rename old → tmpOld, rename new → dest, then remove old
 	oldTmp := parent + "/." + skill.Name + ".old-" + tmpDir[strings.LastIndex(tmpDir, ".")+1:]
@@ -616,37 +699,16 @@ func installOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (Install
 			diskExists = true
 		}
 
-		if ls.Commit == "" {
-			// Stale lock from older versions without a commit SHA.
-			// Only skip when the locked path still matches; otherwise fall through
-			// to fetch a commit and converge the new manifest path.
+		if ls.Commit != "" {
 			if ls.Path == skill.Source.Path && diskExists {
-				if ls.SourceHash != "" && ls.SourceHash != computeSourceHash(skill.Source) {
-					// SourceHash mismatch: fall through to fresh install
-				} else {
-					return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
-				}
-			}
-		} else {
-			if ls.Path == skill.Source.Path && diskExists {
-				// Check commit marker on disk vs lock — detect stale disk
 				commitFile := filepath.Join(destDir, ".skills-commit")
-				if data, err := os.ReadFile(commitFile); err == nil {
-					if strings.TrimSpace(string(data)) == ls.Commit {
-						// SourceHash check: if present in lock, must match
-						if ls.SourceHash != "" && ls.SourceHash != computeSourceHash(skill.Source) {
-							// SourceHash mismatch: fall through to reinstall
-						} else {
-							return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
-						}
-					}
-					// Commit mismatch: fall through to reinstall with locked commit
-				} else {
-					// No commit marker (legacy install) — check SourceHash if present
+				if data, err := os.ReadFile(commitFile); err == nil && strings.TrimSpace(string(data)) == ls.Commit {
 					if ls.SourceHash != "" && ls.SourceHash != computeSourceHash(skill.Source) {
-						// SourceHash mismatch: fall through
-					} else {
-						return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
+						// Source configuration changed: reinstall the pinned content.
+					} else if ls.ContentHash == "" {
+						// Legacy lock: reinstall once rather than trusting possibly edited disk.
+					} else if contentHash, err := computeInstalledContentHash(destDir); err == nil && contentHash == ls.ContentHash {
+						return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed", ContentHash: contentHash}, nil
 					}
 				}
 			}
@@ -656,7 +718,7 @@ func installOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (Install
 			// checking the remote branch.
 			result := InstallSkill(skill, destDir, ls.Commit)
 			if result.Action == "ok" {
-				return result, &LockSkill{Commit: ls.Commit, Path: skill.Source.Path, SourceHash: computeSourceHash(skill.Source)}
+				return result, &LockSkill{Commit: ls.Commit, Path: skill.Source.Path, SourceHash: computeSourceHash(skill.Source), ContentHash: result.ContentHash}
 			}
 			return result, nil
 		}
@@ -674,7 +736,7 @@ func installOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (Install
 
 	result := InstallSkill(skill, destDir, commit)
 	if result.Action == "ok" {
-		return result, &LockSkill{Commit: commit, Path: skill.Source.Path, SourceHash: computeSourceHash(skill.Source)}
+		return result, &LockSkill{Commit: commit, Path: skill.Source.Path, SourceHash: computeSourceHash(skill.Source), ContentHash: result.ContentHash}
 	}
 	return result, nil
 }
@@ -703,10 +765,11 @@ func updateOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (InstallR
 	}
 
 	if hasLock && lockedCommit == latestCommit && ls.Path == skill.Source.Path {
-		// Check SourceHash if present in lock
 		if ls.SourceHash == "" || ls.SourceHash == computeSourceHash(skill.Source) {
-			if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil {
-				return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed"}, nil
+			if _, err := os.Stat(filepath.Join(destDir, "SKILL.md")); err == nil && ls.ContentHash != "" {
+				if contentHash, err := computeInstalledContentHash(destDir); err == nil && contentHash == ls.ContentHash {
+					return InstallResult{Name: skill.Name, Action: "ok", Error: "already installed", ContentHash: contentHash}, nil
+				}
 			}
 		}
 	}
@@ -714,7 +777,7 @@ func updateOneSkill(skill SkillEntry, lock *LockFile, dirs []DirEntry) (InstallR
 	// Use commit SHA as ref to avoid branch race
 	result := InstallSkill(skill, destDir, latestCommit)
 	if result.Action == "ok" {
-		return result, &LockSkill{Commit: latestCommit, Path: skill.Source.Path, SourceHash: computeSourceHash(skill.Source)}
+		return result, &LockSkill{Commit: latestCommit, Path: skill.Source.Path, SourceHash: computeSourceHash(skill.Source), ContentHash: result.ContentHash}
 	}
 	return result, nil
 }
@@ -770,7 +833,7 @@ func runParallel(m *Manifest, lock *LockFile, manifestPath string, fn func(Skill
 	changed := false
 	for _, r := range lockUpdates {
 		old, hadOld := lock.Skills[r.name]
-		if !hadOld || old.Commit != r.lockUpdate.Commit || old.Path != r.lockUpdate.Path || old.SourceHash != r.lockUpdate.SourceHash {
+		if !hadOld || old.Commit != r.lockUpdate.Commit || old.Path != r.lockUpdate.Path || old.SourceHash != r.lockUpdate.SourceHash || old.ContentHash != r.lockUpdate.ContentHash {
 			lock.Skills[r.name] = *r.lockUpdate
 			changed = true
 		}

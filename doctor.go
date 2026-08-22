@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const exitDoctorDrift = 2
+
 type doctorJSONItem struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
@@ -35,11 +37,11 @@ type doctorJSONReport struct {
 	Pruned       []doctorJSONPruned `json:"pruned"`
 }
 
-func cmdDoctor(m *Manifest, lock *LockFile, manifestPath string, pruneTmp, dryRun, jsonOutput bool) {
+func cmdDoctor(m *Manifest, lock *LockFile, manifestPath string, pruneTmp, dryRun, jsonOutput bool) int {
 	items := collectDoctorItems(m, lock)
 	if jsonOutput {
 		printDoctorJSON(m, manifestPath, items, pruneTmp, dryRun)
-		return
+		return doctorExitCode(items)
 	}
 
 	fmt.Printf("  %s: %s\n", bold("manifest"), manifestPath)
@@ -50,7 +52,7 @@ func cmdDoctor(m *Manifest, lock *LockFile, manifestPath string, pruneTmp, dryRu
 
 	if len(items) == 0 {
 		fmt.Println("  " + green("No drift detected."))
-		return
+		return 0
 	}
 
 	okCount := 0
@@ -76,7 +78,7 @@ func cmdDoctor(m *Manifest, lock *LockFile, manifestPath string, pruneTmp, dryRu
 	fmt.Println()
 	if issueCount == 0 {
 		fmt.Printf("  %s\n", green(fmt.Sprintf("%d ok, no drift", okCount)))
-		return
+		return 0
 	}
 	fmt.Printf("  %s\n", yellow(fmt.Sprintf("%d ok, %d drift item(s)", okCount, issueCount)))
 	fmt.Printf("  %s\n", dim("Reconcile local state with 'skills sync'; use 'skills update' when refs changed upstream."))
@@ -87,6 +89,16 @@ func cmdDoctor(m *Manifest, lock *LockFile, manifestPath string, pruneTmp, dryRu
 		fmt.Println()
 		pruneTmpLeftovers(m, dryRun)
 	}
+	return exitDoctorDrift
+}
+
+func doctorExitCode(items []auditItem) int {
+	for _, item := range items {
+		if item.Status != "ok" {
+			return exitDoctorDrift
+		}
+	}
+	return 0
 }
 
 func printDoctorJSON(m *Manifest, manifestPath string, items []auditItem, pruneTmp, dryRun bool) {
@@ -121,7 +133,7 @@ func doctorStatusLabel(status string) string {
 	switch status {
 	case "ok":
 		return green("ok")
-	case "invalid-target", "missing", "path-changed", "stale-disk", "stale", "unmanaged", "mirror-missing", "mirror-wrong-link", "mirror-conflict", "mirror-stray":
+	case "invalid-target", "missing", "path-changed", "stale-disk", "stale", "unmanaged", "modified", "mirror-missing", "mirror-wrong-link", "mirror-conflict", "mirror-stray":
 		return red(status)
 	case "uninstalled":
 		return yellow(status)
@@ -157,7 +169,22 @@ func collectDoctorItems(m *Manifest, lock *LockFile) []auditItem {
 		case !hasLock && diskExists:
 			items = append(items, auditItem{s.Name, "stale-disk", "disk present, but lock entry is missing"})
 		default:
-			items = append(items, auditItem{s.Name, "ok", ""})
+			commitMarker, err := os.ReadFile(filepath.Join(filepath.Dir(skillMD), ".skills-commit"))
+			switch {
+			case err != nil || strings.TrimSpace(string(commitMarker)) != ls.Commit:
+				items = append(items, auditItem{s.Name, "stale-disk", "installed commit marker does not match lock"})
+			case ls.ContentHash == "":
+				items = append(items, auditItem{s.Name, "unverified", "lock has no installed content hash; run 'skills sync' once"})
+			default:
+				contentHash, err := computeInstalledContentHash(filepath.Dir(skillMD))
+				if err != nil {
+					items = append(items, auditItem{s.Name, "modified", fmt.Sprintf("cannot verify installed content: %v", err)})
+				} else if contentHash != ls.ContentHash {
+					items = append(items, auditItem{s.Name, "modified", "installed content differs from lock"})
+				} else {
+					items = append(items, auditItem{s.Name, "ok", ""})
+				}
+			}
 		}
 	}
 

@@ -150,9 +150,10 @@ type LockFile struct {
 }
 
 type LockSkill struct {
-	Commit     string `json:"commit"`
-	Path       string `json:"path"`
-	SourceHash string `json:"sourceHash,omitempty"`
+	Commit      string `json:"commit"`
+	Path        string `json:"path"`
+	SourceHash  string `json:"sourceHash,omitempty"`
+	ContentHash string `json:"contentHash,omitempty"`
 }
 
 // ── path helpers ─────────────────────────────────────────────────────
